@@ -31,9 +31,12 @@
 
 ### 安装
 
-**不会用终端？** 把这个页面的链接发给 Claude，说"帮我安装这个仓库里的 aht-target 技能"，它会帮你装好。
+**第一步：装 Claude Code。** 到 [Claude Code 官网](https://claude.com/claude-code) 下载，桌面 App、VS Code 插件、终端版都可以。
 
-**自己装**：在终端里运行下面三行。装在用户目录下，所有项目都能用：
+**第二步：装这个技能包。** 两种方式选一种：
+
+- **不会用终端**：打开 Claude Code，把这个页面的链接发给它，说"帮我安装这个仓库里的 aht-target 技能"，它会帮你装好。注意要在 **Claude Code** 里发，网页版的聊天窗口没法把东西装到你的电脑上
+- **自己装**：在终端里运行下面三行。装在用户目录下，所有项目都能用
 
 ```bash
 git clone https://github.com/yu527544058-hash/my-skills.git
@@ -76,17 +79,25 @@ python3 aht-target/scripts/aht.py 长case明细.csv --baseline 500 --baseline-is
 - `--baseline 500`：现在的 AHT 基线，单位是秒
 - `--baseline-is short`：这 500 秒是"完全没有长 case 时"的水平。如果是"现在所有 case 的平均"，写 `mixed`，并用 `--q0 10%` 说明当时长 case 占多少
 - `--q 20%`：想算长 case 占比为多少时的目标。写 `20%` 或 `0.2` 都行，可以写多个
+- `--t-long 1800`（可选）：长 case 的平均时间，单位秒。手上有更新的实测值时用它，代替文件里算出来的
+- `--tech`（可选）：多显示一些统计细节，给懂统计的人看
 
 **`calib.py`：新项目，按规模定标**
 
 ```bash
-# 1. 项目经理试标定基线（去掉前 4 条热身；正式开工后平均每条 1,200 字）
+# 1. 项目经理试标定基线
 python3 aht-target/scripts/calib.py fit 试标.csv --warmup 4 --prod-mean 1200 --save pm.json
-# 2. 正式开工 2–3 天后，用标注员的数据重新算，同时算出"标注员比项目经理慢/快多少"
+# 2. 正式开工 2–3 天后，用标注员的数据重新算
 python3 aht-target/scripts/calib.py fit 生产.csv --vs pm.json --save prod.json
 # 3. 以后每一批，按这批的平均规模出目标
 python3 aht-target/scripts/calib.py predict --model prod.json --mean 900
 ```
+
+- `--warmup 4`：前 4 条是热身，不计入
+- `--prod-mean 1200`：正式开工后平均每条的规模（这个例子里是 1200 字）
+- `--save pm.json`：把算出来的起步时间和每单位多花存成一个文件，后面的步骤要用它
+- `--vs pm.json`：拿项目经理试标的结果来对比，算出标注员比项目经理慢/快多少
+- `--model prod.json --mean 900`：用存下来的结果，算平均 900 字的这一批该给多少时间
 
 列名写"视频时长""字数""图片数""segment"，会自动认出单位。
 
