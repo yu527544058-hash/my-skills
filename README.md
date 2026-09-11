@@ -80,6 +80,7 @@ python3 aht-target/scripts/aht.py 长case明细.csv --baseline 500 --baseline-is
 - `--baseline-is short`：这 500 秒是"完全没有长 case 时"的水平。如果是"现在所有 case 的平均"，写 `mixed`，并用 `--q0 10%` 说明当时长 case 占多少
 - `--q 20%`：想算长 case 占比为多少时的目标。写 `20%` 或 `0.2` 都行，可以写多个
 - `--t-long 1800`（可选）：长 case 的平均时间，单位秒。手上有更新的实测值时用它，代替文件里算出来的
+- `--q-now 7%`（可选）：现在实际的长 case 占比。给了之后，能判断要算的占比是不是比现在高出太多
 - `--tech`（可选）：多显示一些统计细节，给懂统计的人看
 
 **`calib.py`：新项目，按规模定标**

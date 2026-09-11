@@ -173,6 +173,7 @@ def main():
                     help='short = 基线是完全没有长 case 时的水平；mixed = 基线是现在所有 case 的平均')
     ap.add_argument('--q0', type=pct_arg, help='baseline-is 为 mixed 时，基线对应的长 case 占比，如 10%%')
     ap.add_argument('--q', type=pct_arg, action='append', help='想算的长 case 占比，可写多个，如 --q 15%% --q 20%%')
+    ap.add_argument('--q-now', type=pct_arg, help='现在实际的长 case 占比，如 7%%。给了之后能判断要算的占比是不是往外推')
     ap.add_argument('--t-long', type=float, help='长 case 的平均时间（秒）。有更新的实测值时，用它代替本文件算出的')
     ap.add_argument('--expect-seg', type=float, help='核对用：表格汇总行里的平均规模')
     ap.add_argument('--expect-aht', type=float, help='核对用：表格汇总行里的平均 AHT')
@@ -207,7 +208,10 @@ def main():
     qs = asked or [0.05, 0.075, 0.10, 0.15, 0.20]
     def target(q, TL=None): return T_short + q * ((T_long if TL is None else TL) - T_short)
     def rng(q): return target(q, T_long - 1.96 * se_L), target(q, T_long + 1.96 * se_L)
-    far = [q for q in asked if q > 0.12]
+    far = [q for q in asked if (q >= a.q_now * 1.5 if a.q_now else q > 0.12)]
+    far_txt = '、'.join(f'{q * 100:g}%' for q in far)
+    far_head = (f'{far_txt} 比现在的 {a.q_now * 100:g}% 高出不少' if a.q_now
+                else f'如果现在的实际占比还不到 {max(far) * 50:g}%（{max(far) * 100:g}% 的一半）' if far else '')
 
     srt = sorted(T, reverse=True)
     top_effect = mean(T) - mean(srt[1:]) if len(T) > 1 else 0.0
@@ -255,13 +259,14 @@ def main():
         notes.append(f'⚠ 有 {len(dropped)} 条没有有效时间（{kinds}），它们的{sm}平均 {miss[0]:.1f}，比有效记录的 '
                      f'{miss[1]:.1f} 高：最费时的 case 恰好缺数据，长 case 的平均时间可能算低了')
     if far:
-        notes.append(f'⚠ {"、".join(f"{q * 100:g}%" for q in far)} 的占比比较高：如果现在的实际占比远低于它，'
-                     f'这个结果是按现有数据往外推的。长 case 变多时，长 case 本身的平均时间也可能跟着变（见最后一节）')
+        notes.append(f'⚠ {far_head}，这个结果就是按现有数据往外推的。长 case 变多时，长 case 本身的平均时间也可能跟着变（见最后一节）'
+                     + ('' if a.q_now else '。用 --q-now 说明现在的占比，可以判断得更准'))
     if rat:
         extra = f'；做过 3 条以上的人里，最快和最慢的差 {span[1] / span[0]:.1f} 倍' if span else ''
         notes.append(f'· 同一个 case 换个人做，一般慢的人是快的人的 {gmean(rat):.1f} 倍{extra}。'
                      f'这个目标适合排产、估人力，不适合直接拿来考核个人')
-    notes.append('· 请确认：这个文件里只放了长 case。混进了短 case，长 case 的平均时间会算低')
+    notes.append('· 如果是要定长 case 的目标，这个文件应该只放长 case，混进短 case 会把长 case 的平均算低。'
+                 '只是看换人差多少的话，放全部 case 没关系')
     print('\n【需要注意】')
     for x in notes: print('  ' + x)
     print('\n下面是详细数据 ↓')
@@ -384,7 +389,7 @@ def main():
         print(f'  {q * 100:>9g}%   {q * (T_long - T_short):>+7.0f} 秒  {target(q):>6.0f} 秒   '
               + (f'{lo:.0f}–{hi:.0f} 秒' if se_L else '（长 case 平均时间是指定值，没有范围）'))
     if far:
-        print(f'\n  ⚠ {"、".join(f"{q * 100:g}%" for q in far)} 的占比比较高。如果现在的实际占比远低于它，代入前先确认：')
+        print(f'\n  ⚠ {far_head}，代入前先确认：')
         print(f'     · 长 case 的平均{sm}往哪走：变少了，长 case 平均时间要往下调；变多了，要往上调')
         print('     · 手上有更新的长 case 平均时间，就用 --t-long 代进来，不要拿旧的数硬推')
     print(f'\n  建议：每天按当天实际的长 case 占比算目标 → 当日目标 = {T_short:.0f} + {slope:.1f} × 当天长 case 占比(%)')
