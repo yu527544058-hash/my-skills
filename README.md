@@ -51,6 +51,21 @@ python3 aht-target/scripts/aht.py data.csv \
 
 CSV 至少要有时长列；再有处理人和 Item ID 就能做配对分析。列名自动识别（中英文都支持），`deferred` / `In check` 等非数值会自动剔除并单独统计缺失的方向性。
 
+**按视频时长定标** `aht-target/scripts/calib.py`：新项目还没有历史数据时用。
+
+> 每条处理时间 = 起步时间 + 每秒多花 × 视频时长（就像打车费 = 起步价 + 每公里的钱）
+
+```bash
+# 1. 试标定基线（去掉前 4 条热身，生产视频平均 75 秒）
+python3 aht-target/scripts/calib.py fit trial.csv --warmup 4 --prod-mean 75 --save pm.json
+# 2. 上线 2–3 天后用生产数据重标，顺带算出「试标人 → 标注员」换算系数
+python3 aht-target/scripts/calib.py fit prod.csv --vs pm.json --save prod.json
+# 3. 每批按平均时长出目标
+python3 aht-target/scripts/calib.py predict --model prod.json --mean 82
+```
+
+会自动检测热身期、离群值、试标时长跨度是否太窄；时长解释不了多少差异时，会改为统一用平均值而不硬套公式。
+
 ## License
 
 MIT
