@@ -316,7 +316,7 @@ def cmd_fit(a):
     hr('④ 基线')
     y0, lo, hi = pred_ci(M, pdur)
     print(f'  按{src} {fd(pdur)} 算')
-    print(f'  基线 AHT   {fmt(y0)}（{y0:.0f}s）   95% 区间 {lo:.0f}–{hi:.0f}s')
+    print(f'  基线 AHT   {fmt(y0)}（{y0:.0f}s），大概率在 {lo:.0f}–{hi:.0f}s 之间')
     print(f'  取整到 10 秒：{ceil10(y0)}s')
     print(f'  这是「{level}」的水平')
     if not a.prod_durations and not a.prod_mean:
@@ -355,8 +355,11 @@ def cmd_fit(a):
                 print(f'  样本 ≥5 条的人之间差 {max(solid) / min(solid):.1f} 倍 —— 目标适合排产，不适合直接考核个人')
 
     if is_trial:
-        print(f'\n  ⚠ 提醒：这是项目经理一个人的水平。上线 2–3 天后用生产数据重跑一次：'
-              f'\n     python3 calib.py fit 生产数据.csv --vs {a.save or "这次保存的模型.json"} --save prod.json')
+        print(f'\n  ⚠ 提醒：这是项目经理一个人的水平。正式生产 2–3 天后，用标注员的数据重算一次：')
+        if a.save:
+            print(f'     python3 calib.py fit 生产数据.csv --vs {a.save} --save prod.json')
+        else:
+            print('     （这次没保存模型。重跑时加 --save pm.json 保存下来，之后才能拿来对比）')
 
     if a.save:
         keep = {k: v for k, v in M.items() if k != 'res'}
@@ -392,7 +395,7 @@ def cmd_predict(a):
         print(f'  已乘换算系数 {a.ratio:.2f}')
     print(f'  本批 {len(durs)} 条，平均{lbl()} {fd(dbar)}' if ids else f'  本批平均{lbl()} {fd(dbar)}')
     print(f'\n  目标 AHT   {fmt(y)}（{y:.0f}s）')
-    print(f'  95% 区间   {lo:.0f}–{hi:.0f}s')
+    print(f'  大概率在   {lo:.0f}–{hi:.0f}s 之间')
     print(f'  取整到 10 秒：{ceil10(y)}s')
     if M['mode'] == 'flat':
         print(f'  （这个模型不按{lbl()}调，所以跟本批长短无关）')
@@ -417,11 +420,22 @@ def cmd_predict(a):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='按规模（视频时长 / 字数 / 图片数…）定 AHT 目标')
+    ap = argparse.ArgumentParser(
+        description='按规模（视频时长 / 字数 / 图片数…）定 AHT（平均每条处理时长）目标',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='例子：\n'
+               '  # 1. 项目经理试标定基线（去掉前 4 条热身；正式生产时平均每条 1200 字）\n'
+               '  python3 calib.py fit 试标.csv --warmup 4 --prod-mean 1200 --save pm.json\n'
+               '  # 2. 正式生产 2–3 天后，用标注员的数据重算\n'
+               '  python3 calib.py fit 生产.csv --vs pm.json --save prod.json\n'
+               '  # 3. 以后每一批，按这批的平均规模出目标\n'
+               '  python3 calib.py predict --model prod.json --mean 900\n\n'
+               '每个子命令的详细参数：python3 calib.py fit --help / python3 calib.py predict --help')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
-    f = sub.add_parser('fit', help='用逐条数据定标（试标或生产）')
-    f.add_argument('data')
+    f = sub.add_parser('fit', help='用逐条数据定标（试标或正式生产的数据都行）',
+                       description='用逐条数据算出「起步时间」和「每单位多花」，给出基线 AHT')
+    f.add_argument('data', help='CSV 文件：每行一个 case，要有规模（视频时长 / 字数…）和 AHT 两列')
     f.add_argument('--warmup', type=int, default=0, help='去掉前 N 条热身数据')
     f.add_argument('--prod-mean', type=to_sec, help='生产时的平均规模（视频秒数或 mm:ss / 字数 / 张数…）')
     f.add_argument('--prod-durations', help='生产的规模列表 CSV，用来算基线')
@@ -431,16 +445,18 @@ def main():
     f.add_argument('--label', help='规模的叫法，如 字数、图片数（默认按列名）')
     f.add_argument('--force-linear', action='store_true', help='时长解释力低时也强制按时长算')
     f.add_argument('--save', help='保存模型 JSON')
-    f.add_argument('--dur-col'); f.add_argument('--aht-col')
+    f.add_argument('--dur-col', help='规模在哪一列（列名或从 0 数起的位置），认不出时才需要')
+    f.add_argument('--aht-col', help='AHT 在哪一列（列名或从 0 数起的位置），认不出时才需要')
     f.set_defaults(func=cmd_fit)
 
-    p = sub.add_parser('predict', help='给新一批出目标')
+    p = sub.add_parser('predict', help='给新一批出目标',
+                       description='用 fit 保存的模型，按这批的平均规模算出 AHT 目标')
     p.add_argument('--model', required=True)
     p.add_argument('--mean', type=to_sec, help='这批的平均规模（视频秒数或 mm:ss / 字数 / 张数…）')
     p.add_argument('--durations', help='这批的规模列表 CSV')
     p.add_argument('--ratio', type=float, default=1.0, help='乘一个换算系数（如上个项目算出的 1.25）')
     p.add_argument('--per-case', help='逐条目标输出 CSV')
-    p.add_argument('--dur-col')
+    p.add_argument('--dur-col', help='规模在哪一列（列名或从 0 数起的位置），认不出时才需要')
     p.set_defaults(func=cmd_predict)
 
     a = ap.parse_args()
