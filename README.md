@@ -14,6 +14,8 @@ cp -r my-skills/aht-target ~/.claude/skills/
 
 只想在某个项目里生效就放到该项目的 `.claude/skills/` 下。
 
+装好后在 Claude Code 里输入 `/aht-target help`，会显示一份大白话的使用指南（三种用法、要准备什么数据、常见问题）。
+
 ## Skills
 
 ### `aht-target` — 处理时长（AHT）目标测算
