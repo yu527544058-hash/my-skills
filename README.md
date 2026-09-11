@@ -54,7 +54,7 @@ cp -r my-skills/aht-target ~/.claude/skills/
 
 **新项目：还没有历史数据**
 
-每条处理时间 = 起步时间 + 每单位多花 × 规模，就像打车费 = 起步价 + 每公里的钱。"规模"就是这个项目里什么越多越费时：视频看时长，文本看字数，图片看张数。项目经理试标几十条，就能算出起步时间是多少、每单位多花多少。
+每条处理时间 = 起步时间 + 每单位多花 × 长短，就像打车费 = 起步价 + 每公里的钱。"长短"就是影响处理时间的主要因素：视频看时长，文本看字数，图片看张数。项目经理试标几十条，就能算出起步时间是多少、每单位多花多少。
 
 **它会帮你避开的几个坑**
 
@@ -83,19 +83,19 @@ python3 aht-target/scripts/aht.py 长case明细.csv --baseline 500 --baseline-is
 - `--q-now 7%`（可选）：现在实际的长 case 占比。给了之后，能判断要算的占比是不是比现在高出太多
 - `--tech`（可选）：多显示一些统计细节，给懂统计的人看
 
-**`calib.py`：新项目，按规模定标**
+**`calib.py`：新项目，按长短定标**
 
 ```bash
 # 1. 项目经理试标定基线
 python3 aht-target/scripts/calib.py fit 试标.csv --warmup 4 --prod-mean 1200 --save pm.json
 # 2. 正式开工 2–3 天后，用标注员的数据重新算
 python3 aht-target/scripts/calib.py fit 生产.csv --vs pm.json --save prod.json
-# 3. 以后每一批，按这批的平均规模出目标
+# 3. 以后每一批，按这批的平均长短出目标
 python3 aht-target/scripts/calib.py predict --model prod.json --mean 900
 ```
 
 - `--warmup 4`：前 4 条是热身，不计入
-- `--prod-mean 1200`：正式开工后平均每条的规模（这个例子里是 1200 字）
+- `--prod-mean 1200`：正式开工后平均每条的长短（这个例子里是 1200 字）
 - `--save pm.json`：把算出来的起步时间和每单位多花存成一个文件，后面的步骤要用它
 - `--vs pm.json`：拿项目经理试标的结果来对比，算出标注员比项目经理慢/快多少
 - `--model prod.json --mean 900`：用存下来的结果，算平均 900 字的这一批该给多少时间

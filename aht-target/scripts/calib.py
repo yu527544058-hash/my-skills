@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-按「规模」定 AHT 目标：试标定标 → 生产重标 → 每批出目标。
-规模 = 这个项目里什么越多、处理就越费时：视频看时长，文本看字数，图片看张数。
+按「长短」定 AHT 目标：试标定标 → 生产重标 → 每批出目标。
+长短 = 影响处理时间的主要因素，也就是判断长 case、短 case 用的那个数：视频看时长，文本看字数，图片看张数。
 
-    每条处理时间 = 起步时间 + 每单位多花 × 规模
+    每条处理时间 = 起步时间 + 每单位多花 × 长短
 
   起步时间：不管多长都要花的时间（打开、加载、看要求、检查、提交）
-  每单位多花：规模每多 1 个单位（1 秒 / 1 个字 / 1 张图），要多花的处理时间
+  每单位多花：长短每多 1 个单位（1 秒 / 1 个字 / 1 张图），要多花的处理时间
 
 用法:
-  # 阶段 1：项目经理试标定标（前 4 条是热身，不计入；生产时平均规模 75）
+  # 阶段 1：项目经理试标定标（前 4 条是热身，不计入；生产时平均长短 75）
   python3 calib.py fit trial.csv --warmup 4 --prod-mean 75 --save pm.json
 
   # 阶段 2：上线 2–3 天后用生产数据重标，顺带算出「项目经理 → 标注员」换算系数
   python3 calib.py fit prod.csv --vs pm.json --save prod.json
 
-  # 阶段 3：每批出目标（给这批的平均规模，或给规模列表）
+  # 阶段 3：每批出目标（给这批的平均长短，或给长短列表）
   python3 calib.py predict --model prod.json --mean 82
   python3 calib.py predict --model prod.json --durations batch.csv --per-case out.csv
 
@@ -78,7 +78,7 @@ def t975(df):
 
 def hr(t): print('\n' + '=' * 68 + '\n' + t + '\n' + '=' * 68)
 
-UNIT, LABEL, DUR_HEAD = '秒', '视频时长', ''   # 规模的单位、叫法、原始列名
+UNIT, LABEL, DUR_HEAD = '秒', '视频时长', ''   # 长短的单位、叫法、原始列名
 UNIT_BY_HEADER = {   # 列名 → (单位, 叫法)
     **{k: ('秒', '视频时长') for k in ['视频时长', 'videoduration', 'videolength', '视频长度',
                                      'duration', 'video', 'dur', '时长']},
@@ -93,11 +93,11 @@ def set_unit(unit, label, head):
     guess = UNIT_BY_HEADER.get(norm(head))
     if unit:
         u, how = unit, '手动指定'
-        l = guess[1] if guess and guess[0] == unit else '规模'
+        l = guess[1] if guess and guess[0] == unit else '长短'
     elif guess:
         u, l, how = guess[0], guess[1], '按列名自动识别'
     else:
-        u, l, how = '单位', '规模', '列名认不出单位，建议用 --unit 指定，如 --unit 字'
+        u, l, how = '单位', '长短', '列名认不出单位，建议用 --unit 指定，如 --unit 字'
     return u, (label or l), how
 def per_scale(b):
     """每单位多花太小时，换算成「每 10/100/1000 个单位」更好读"""
@@ -132,7 +132,7 @@ def load(path, dur_col=None, aht_col=None, need_aht=True):
     ia = (resolve(head, aht_col) if aht_col else pick(head, 'aht')) if need_aht else None
     idur = resolve(head, dur_col) if dur_col else pick(head, 'dur', exclude={ia})
     if idur is None or (need_aht and ia is None):
-        sys.exit('需要「规模」（视频时长 / 字数 / 图片数…）和「AHT」两列，识别不到时用 --dur-col / --aht-col 指定列名或位置')
+        sys.exit('需要「长短」（视频时长 / 字数 / 图片数…）和「AHT」两列，识别不到时用 --dur-col / --aht-col 指定列名或位置')
     DUR_HEAD = rows[0][idur].strip()
     used = {ia, idur}
     iid, iord, iw = (pick(head, k, exclude=used) for k in ('id', 'order', 'worker'))
@@ -232,7 +232,7 @@ def cmd_fit(a):
     hr('① 数据')
     print(f'  有效 {len(rows)} 条' + (f'，剔除 {len(dropped)} 条无效 AHT：'
           + '、'.join(f'{d["id"]}({d["raw"]})' for d in dropped[:6]) if dropped else ''))
-    print(f'  规模：「{DUR_HEAD}」列，单位「{UNIT}」（{how}）')
+    print(f'  长短：「{DUR_HEAD}」列，单位「{UNIT}」（{how}）')
     print(f'  顺序依据：{"表里的顺序列" if has_order else "文件里的行顺序（没找到顺序列）"}')
 
     # 热身期
@@ -377,7 +377,7 @@ def cmd_predict(a):
     global UNIT, LABEL
     M = json.load(open(a.model, encoding='utf-8'))
     UNIT = M.get('unit', '秒')
-    LABEL = M.get('label', '视频时长' if UNIT == '秒' else '规模')
+    LABEL = M.get('label', '视频时长' if UNIT == '秒' else '长短')
     if a.mean is not None:
         durs, ids = [a.mean], None
     elif a.durations:
@@ -421,42 +421,42 @@ def cmd_predict(a):
 
 def main():
     ap = argparse.ArgumentParser(
-        description='按规模（视频时长 / 字数 / 图片数…）定 AHT（平均每条处理时长）目标',
+        description='按长短（视频时长 / 字数 / 图片数…）定 AHT（平均每条处理时长）目标',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='例子：\n'
                '  # 1. 项目经理试标定基线（去掉前 4 条热身；正式生产时平均每条 1200 字）\n'
                '  python3 calib.py fit 试标.csv --warmup 4 --prod-mean 1200 --save pm.json\n'
                '  # 2. 正式生产 2–3 天后，用标注员的数据重算\n'
                '  python3 calib.py fit 生产.csv --vs pm.json --save prod.json\n'
-               '  # 3. 以后每一批，按这批的平均规模出目标\n'
+               '  # 3. 以后每一批，按这批的平均长短出目标\n'
                '  python3 calib.py predict --model prod.json --mean 900\n\n'
                '每个子命令的详细参数：python3 calib.py fit --help / python3 calib.py predict --help')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     f = sub.add_parser('fit', help='用逐条数据定标（试标或正式生产的数据都行）',
                        description='用逐条数据算出「起步时间」和「每单位多花」，给出基线 AHT')
-    f.add_argument('data', help='CSV 文件：每行一个 case，要有规模（视频时长 / 字数…）和 AHT 两列')
+    f.add_argument('data', help='CSV 文件：每行一个 case，要有长短（视频时长 / 字数…）和 AHT 两列')
     f.add_argument('--warmup', type=int, default=0, help='去掉前 N 条热身数据')
-    f.add_argument('--prod-mean', type=to_sec, help='生产时的平均规模（视频秒数或 mm:ss / 字数 / 张数…）')
-    f.add_argument('--prod-durations', help='生产的规模列表 CSV，用来算基线')
+    f.add_argument('--prod-mean', type=to_sec, help='生产时的平均长短（视频秒数或 mm:ss / 字数 / 张数…）')
+    f.add_argument('--prod-durations', help='生产的长短列表 CSV，用来算基线')
     f.add_argument('--vs', help='项目经理试标时 --save 存下的文件；给了就算「标注员比项目经理慢/快多少」')
     f.add_argument('--level', default='项目经理试标', help='这份数据是谁做的（写进模型）')
     f.add_argument('--unit', help='单位：默认按列名自动识别（视频时长→秒，字数→字…），认错时手动指定')
-    f.add_argument('--label', help='规模的叫法，如 字数、图片数（默认按列名）')
+    f.add_argument('--label', help='长短的叫法，如 字数、图片数（默认按列名）')
     f.add_argument('--force-linear', action='store_true', help='时长解释力低时也强制按时长算')
     f.add_argument('--save', help='把结果（起步时间、每单位多花等）存成文件，后面的步骤要用，如 pm.json')
-    f.add_argument('--dur-col', help='规模在哪一列（列名或从 0 数起的位置），认不出时才需要')
+    f.add_argument('--dur-col', help='长短在哪一列（列名或从 0 数起的位置），认不出时才需要')
     f.add_argument('--aht-col', help='AHT 在哪一列（列名或从 0 数起的位置），认不出时才需要')
     f.set_defaults(func=cmd_fit)
 
     p = sub.add_parser('predict', help='给新一批出目标',
-                       description='用 fit 保存的模型，按这批的平均规模算出 AHT 目标')
+                       description='用 fit 保存的模型，按这批的平均长短算出 AHT 目标')
     p.add_argument('--model', required=True, help='fit 时用 --save 存下的文件，如 prod.json')
-    p.add_argument('--mean', type=to_sec, help='这批的平均规模（视频秒数或 mm:ss / 字数 / 张数…）')
-    p.add_argument('--durations', help='这批的规模列表 CSV')
+    p.add_argument('--mean', type=to_sec, help='这批的平均长短（视频秒数或 mm:ss / 字数 / 张数…）')
+    p.add_argument('--durations', help='这批的长短列表 CSV')
     p.add_argument('--ratio', type=float, default=1.0, help='乘一个换算系数（如上个项目算出的 1.25）')
     p.add_argument('--per-case', help='逐条目标输出 CSV')
-    p.add_argument('--dur-col', help='规模在哪一列（列名或从 0 数起的位置），认不出时才需要')
+    p.add_argument('--dur-col', help='长短在哪一列（列名或从 0 数起的位置），认不出时才需要')
     p.set_defaults(func=cmd_predict)
 
     a = ap.parse_args()

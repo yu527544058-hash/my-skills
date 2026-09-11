@@ -18,7 +18,7 @@ AHT 目标测算：长 case 占比变了，AHT（平均每条处理时长）目�
 列名自动识别（不区分大小写、忽略空格）；识别不到时用 --cols 按位置指定：
   worker / annotator / 标注员      标注员 ID  （可选，有则做换人对比）
   item / item id / case / 任务      case ID    （可选，有则做换人对比）
-  segment / size / 字数…            规模（可选，缺了只是少一段分析）
+  segment / size / 字数…            长短（可选，缺了只是少一段分析）
   aht / duration / 时长             处理时长（秒）
 
 非数值的 AHT（deferred / In check / Not found / 空）自动剔除并单独统计。
@@ -32,10 +32,10 @@ ALIAS = {
                '标注员', '员工', '账号', '处理人', '操作人', '处理员', '客服', '审核员', '质检员', '作业员'],
     'item':   ['item', 'itemid', 'item id', 'case', 'caseid', 'case id', 'task', 'taskid', 'ticket',
                'ticketid', 'jobid', 'id', '任务', '任务id', '工单', '工单号', '单号', '案件', 'caseno'],
-    # 规模变量：换项目时这里加你自己的列名
+    # 长短变量：换项目时这里加你自己的列名
     'seg':    ['segment', 'segments', 'segmentnumber', 'segment number', 'seg', 'segnum',
                'size', 'count', 'length', 'complexity', 'volume', 'items', 'lines', 'pages',
-               'segment数', '数量', '条数', '字数', '页数', '时长', '规模', '复杂度'],
+               'segment数', '数量', '条数', '字数', '页数', '时长', '长短', '规模', '复杂度'],
     'aht':    ['aht', 'duration', 'time', 'handletime', 'handling time', '时长', '处理时长'],
 }
 
@@ -112,7 +112,7 @@ def load(path, cols=None):
     idx = {}
     if cols:
         parts = cols.split(',')
-        if len(parts) != 4: sys.exit('--cols 需要 4 个位置：标注员,caseID,规模,AHT（没有的填 x），如 0,1,2,3')
+        if len(parts) != 4: sys.exit('--cols 需要 4 个位置：标注员,caseID,长短,AHT（没有的填 x），如 0,1,2,3')
         for k, p in zip(['worker', 'item', 'seg', 'aht'], parts):
             idx[k] = None if p.strip().lower() == 'x' else int(p)
         probe = idx['seg'] if idx['seg'] is not None else idx['aht']
@@ -165,9 +165,9 @@ def main():
                '  python3 aht.py 长case明细.csv --baseline 500 --baseline-is short --q 20%\n'
                '  （基线 500 秒是完全没有长 case 时的水平，算长 case 占 20% 时的目标）')
     ap.add_argument('data', help='CSV 文件，只放长 case 的逐条明细')
-    ap.add_argument('--cols', help='按位置指定列：标注员,caseID,规模,AHT（从 0 数起，没有的填 x），如 0,1,2,3')
+    ap.add_argument('--cols', help='按位置指定列：标注员,caseID,长短,AHT（从 0 数起，没有的填 x），如 0,1,2,3')
     ap.add_argument('--size-label', default='segment',
-                    help='规模在输出里的叫法，如 字数、图片数（默认 segment）')
+                    help='长短在输出里的叫法，如 字数、图片数（默认 segment）')
     ap.add_argument('--baseline', type=float, required=True, help='现在的 AHT 基线（秒）')
     ap.add_argument('--baseline-is', choices=['short', 'mixed'], required=True,
                     help='short = 基线是完全没有长 case 时的水平；mixed = 基线是现在所有 case 的平均')
@@ -175,7 +175,7 @@ def main():
     ap.add_argument('--q', type=pct_arg, action='append', help='想算的长 case 占比，可写多个，如 --q 15%% --q 20%%')
     ap.add_argument('--q-now', type=pct_arg, help='现在实际的长 case 占比，如 7%%。给了之后能判断要算的占比是不是往外推')
     ap.add_argument('--t-long', type=float, help='长 case 的平均时间（秒）。有更新的实测值时，用它代替本文件算出的')
-    ap.add_argument('--expect-seg', type=float, help='核对用：表格汇总行里的平均规模')
+    ap.add_argument('--expect-seg', type=float, help='核对用：表格汇总行里的平均长短')
     ap.add_argument('--expect-aht', type=float, help='核对用：表格汇总行里的平均 AHT')
     ap.add_argument('--tech', action='store_true', help='多显示统计细节（R²、t 值、几何平均等），给懂统计的人看')
     a = ap.parse_args()
@@ -282,7 +282,7 @@ def main():
     if has_seg:
         print(f'  {SZ}：平均 {mean(S):.1f}，最少 {min(S):g}，最多 {max(S):g}')
     else:
-        print('  没有规模这一列：少了「时间花在哪」的分析，目标照样能算')
+        print('  没有长短这一列（比如 segment 数、字数）：少了「时间花在哪」的分析，目标照样能算')
     print(f'  AHT：平均 {mean(T):.0f} 秒，中间值 {median(T):.0f} 秒')
     print(f'       一半的记录在 {pct(T, .25):.0f}–{pct(T, .75):.0f} 秒之间；'
           f'最快的 10% 不到 {pct(T, .1):.0f} 秒，最慢的 10% 超过 {pct(T, .9):.0f} 秒')
@@ -338,12 +338,12 @@ def main():
                 print(f'\n  做过 3 条以上的人之间：最快 {span[0]:.2f}x，最慢 {span[1]:.2f}x，差 {span[1] / span[0]:.1f} 倍')
             print('  只做过 1–2 条的人，结果不稳定，仅供参考')
 
-    # ---- 规模的影响 ----
+    # ---- 长短的影响 ----
     if has_seg:
         hr(f'{sh}对时间的影响')
         a0, b0, r2, se_b = ols(S, [math.log(t) for t in T])
         if b0 is None:
-            print('  数据太少，或者规模都一样，算不了')
+            print('  数据太少，或者长短都一样，算不了')
         else:
             k = 10 ** max(0, round(math.log10(max(median(S), 1))) - 1)
             ch = math.exp(b0 * k) - 1
