@@ -1,10 +1,39 @@
 # my-skills
 
-给 [Claude Code](https://claude.com/claude-code) 用的 Skill 集合。
+我自己用的 [Claude Code](https://claude.com/claude-code) 技能包。
 
-## 安装
+> **Claude Code 是什么**：Anthropic 出的 AI 助手，可以在终端、桌面 App 或 VS Code 里用。
+>
+> **Skill（技能包）是什么**：给 Claude 装的"专项能力"。装好之后，你用中文跟 Claude 说需求，它就会按技能包里的方法来做，**不需要你自己写代码或跑命令**。
 
-放到用户级目录，任何项目下都能触发：
+---
+
+## aht-target：AHT 目标测算
+
+**AHT** 是 Average Handling Time 的缩写，就是**平均每条 case 的处理时长**。
+
+这个技能帮你：
+
+- **根据数据定出 AHT 目标**，并随着 case 的构成变化灵活调整：长 case 变多了、视频变长了、字数变多了，目标都能跟着重新算
+- **顺带告诉你**，处理时间的差异是 case 本身造成的，还是人造成的
+
+适合给标注员、审核员、客服这类"按条计时"的岗位定时间目标的运营和项目经理。
+
+### 装好以后怎么用
+
+直接跟 Claude 说就行，比如：
+
+- "长 case 占比从 7% 涨到 12%，AHT 该给多少？"
+- "新项目是文本标注，项目经理试标了 30 条，帮我定个 AHT 基线"（然后把表格发给它）
+- "帮我看看这批数据，AHT 差异是什么造成的"
+
+第一次用，先输入 **`/aht-target help`**，会显示一份大白话的使用指南：三种用法、每种要准备什么数据、常见问题。
+
+### 安装
+
+**不会用终端？** 把这个页面的链接发给 Claude，说"帮我安装这个仓库里的 aht-target 技能"，它会帮你装好。
+
+**自己装**：在终端里运行下面三行。装在用户目录下，所有项目都能用：
 
 ```bash
 git clone https://github.com/yu527544058-hash/my-skills.git
@@ -12,61 +41,56 @@ mkdir -p ~/.claude/skills
 cp -r my-skills/aht-target ~/.claude/skills/
 ```
 
-只想在某个项目里生效就放到该项目的 `.claude/skills/` 下。
+装完重新打开 Claude Code，输入 `/aht-target help`，能看到使用指南就说明装好了。
 
-装好后在 Claude Code 里输入 `/aht-target help`，会显示一份大白话的使用指南（三种用法、要准备什么数据、常见问题）。
+### 它是怎么算的（想了解原理再看）
 
-## Skills
+**老项目：长 case 占比变了**
 
-### `aht-target` — 处理时长（AHT）目标测算
+平均时长就是短 case 和长 case 按比例混在一起。举个例子：短 case 每条 500 秒，长 case 每条 1,500 秒，长 case 占 10%，平均就是 500 × 90% + 1,500 × 10% = 600 秒。长 case 占比每涨 1 个百分点，平均时长就多出 (1,500 − 500) ÷ 100 = 10 秒。
 
-根据数据定出 AHT 目标，并随着 case 的构成变化灵活调整：长 case 占比变了、视频变长了、字数变多了，目标都能跟着重新算。顺带诊断处理时间的差异是 case 本身造成的，还是人造成的。
+**新项目：还没有历史数据**
 
-适用于标注、客服工单、内容审核、质检、外包计件等任何**"按混合比例调整均值目标"**的场景。
+每条处理时间 = 起步时间 + 每单位多花 × 规模，就像打车费 = 起步价 + 每公里的钱。"规模"就是这个项目里什么越多越费时：视频看时长，文本看字数，图片看张数。项目经理试标几十条，就能算出起步时间是多少、每单位多花多少。
 
-**核心模型**（是算术，不是拟合）：
+**它会帮你避开的几个坑**
 
-```
-目标 = T_短 + q × (T_长 − T_短)        斜率 = (T_长 − T_短)/100 秒/百分点
-```
+- 说"现在 AHT 是 500 秒"时，要先说清楚这 500 秒**包不包含**长 case。说反了，算出来连该加还是该减都会反
+- "长 case"的标准要统一。占比按"超过 30 个 segment"算，长 case 的平均时长也得按同一个标准算
+- 一条挂机 3 小时的记录，就能把平均值拉高一大截，要先挑出来
+- 同一个 case 换个人做，时间经常差 2 倍。算出来的目标适合排产、估人力，不适合直接拿来考核个人
 
-**方法论覆盖 8 个环节**，每一个都对应一类真实踩过的坑：
+<details>
+<summary><b>高级：自己在终端里跑脚本</b>（一般用不到，Claude 会替你跑）</summary>
 
-| | 环节 | 要点 |
-|---|---|---|
-| 0 | 口径先行 | 阈值 / 分母 / 基线语义不钉死，后面全白算 |
-| 1 | 校验转录 | 复算均值对汇总行；截图压缩太狠不要逐行猜数字 |
-| 2 | 基线语义 | 混合均值 vs 无长 case 基线 —— **搞反答案方向都是反的** |
-| 3 | 混合均值模型 | T_长 用均值不用中位数（只有均值满足可加性） |
-| 4 | 找配对 | 同一 Item 被多人做过 = 天然对照实验，价值最高的一步 |
-| 5 | 别急着说"无关" | R² 低可能是混杂因素淹了信号 |
-| 6 | 外推检验 | T_长 会随占比改变，不能拿旧值线性外推 |
-| 7 | 数据质量 | 离群点影响、缺失值方向性、删失数据 |
-| 8 | 量级对比 | 产能规划值 ≠ 个人考核线 |
+两个脚本都只用 Python 自带的库，不用额外安装。
 
-**附带脚本** `aht-target/scripts/aht.py`：纯标准库，无依赖。一条命令跑完配对检验、方差分解、离群点影响、目标曲线。
+**`aht.py`：老项目，长 case 占比变了**
+
+输入一个 CSV，里面**只放长 case** 的逐条明细。至少要有处理时长这一列；有标注员和 case ID 列时，还会分析人和人之间差多少。
 
 ```bash
-python3 aht-target/scripts/aht.py data.csv \
-        --baseline 500 --baseline-is short --q 0.10 --q 0.20
+python3 aht-target/scripts/aht.py 长case明细.csv --baseline 500 --baseline-is short --q 20%
 ```
 
-CSV 至少要有时长列；再有处理人和 Item ID 就能做配对分析。列名自动识别（中英文都支持），`deferred` / `In check` 等非数值会自动剔除并单独统计缺失的方向性。
+- `--baseline 500`：现在的 AHT 基线，单位是秒
+- `--baseline-is short`：这 500 秒是"完全没有长 case 时"的水平。如果是"现在所有 case 的平均"，写 `mixed`，并用 `--q0 10%` 说明当时长 case 占多少
+- `--q 20%`：想算长 case 占比为多少时的目标。写 `20%` 或 `0.2` 都行，可以写多个
 
-**按规模定标** `aht-target/scripts/calib.py`：新项目还没有历史数据时用。规模就是"什么越多越费时"：视频看时长，文本看字数，图片看张数。列名写"视频时长""字数""图片数"会自动识别单位。
-
-> 每条处理时间 = 起步时间 + 每单位多花 × 规模（就像打车费 = 起步价 + 每公里的钱）
+**`calib.py`：新项目，按规模定标**
 
 ```bash
-# 1. 试标定基线（去掉前 4 条热身，生产时平均规模 75）
-python3 aht-target/scripts/calib.py fit trial.csv --warmup 4 --prod-mean 75 --save pm.json
-# 2. 上线 2–3 天后用生产数据重标，顺带算出「试标人 → 标注员」换算系数
-python3 aht-target/scripts/calib.py fit prod.csv --vs pm.json --save prod.json
-# 3. 每批按平均规模出目标
-python3 aht-target/scripts/calib.py predict --model prod.json --mean 82
+# 1. 项目经理试标定基线（去掉前 4 条热身；正式开工后平均每条 1,200 字）
+python3 aht-target/scripts/calib.py fit 试标.csv --warmup 4 --prod-mean 1200 --save pm.json
+# 2. 正式开工 2–3 天后，用标注员的数据重新算，同时算出"标注员比项目经理慢/快多少"
+python3 aht-target/scripts/calib.py fit 生产.csv --vs pm.json --save prod.json
+# 3. 以后每一批，按这批的平均规模出目标
+python3 aht-target/scripts/calib.py predict --model prod.json --mean 900
 ```
 
-会自动检测热身期、离群值、试标规模跨度是否太窄；规模解释不了多少差异时，会改为统一用平均值而不硬套公式。
+列名写"视频时长""字数""图片数""segment"，会自动认出单位。
+
+</details>
 
 ## License
 
