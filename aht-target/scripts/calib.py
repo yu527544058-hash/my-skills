@@ -1,35 +1,41 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-按视频时长（或任何连续的规模变量）定 AHT 目标：试标定标 → 生产重标 → 每批出目标。
+按「规模」定 AHT 目标：试标定标 → 生产重标 → 每批出目标。
+规模 = 这个项目里什么越多、处理就越费时：视频看时长，文本看字数，图片看张数。
 
-    每条处理时间 = 起步时间 + 每秒多花 × 视频时长
+    每条处理时间 = 起步时间 + 每单位多花 × 规模
 
-  起步时间：不管视频多长都要花的时间（打开、加载、看要求、检查、提交）
-  每秒多花：视频每长 1 秒，要多花的处理时间
+  起步时间：不管多长都要花的时间（打开、加载、看要求、检查、提交）
+  每单位多花：规模每多 1 个单位（1 秒 / 1 个字 / 1 张图），要多花的处理时间
 
 用法:
-  # 阶段 1：项目经理试标定标（前 4 条是热身，不计入；生产视频平均 75 秒）
+  # 阶段 1：项目经理试标定标（前 4 条是热身，不计入；生产时平均规模 75）
   python3 calib.py fit trial.csv --warmup 4 --prod-mean 75 --save pm.json
 
   # 阶段 2：上线 2–3 天后用生产数据重标，顺带算出「项目经理 → 标注员」换算系数
   python3 calib.py fit prod.csv --vs pm.json --save prod.json
 
-  # 阶段 3：每批出目标（给这批平均时长，或给时长列表）
+  # 阶段 3：每批出目标（给这批的平均规模，或给规模列表）
   python3 calib.py predict --model prod.json --mean 82
   python3 calib.py predict --model prod.json --durations batch.csv --per-case out.csv
 
-列名自动识别（视频时长 / duration / AHT / 处理时长 / case id / 顺序 / 标注员）。
-时长和 AHT 都支持：秒数、mm:ss、h:mm:ss。
-非数值的 AHT（deferred / In check / Not found / 空）自动剔除并单独列出。
+列名自动识别，并按列名自动定单位：
+  视频时长 / duration          → 秒（支持 mm:ss）
+  字数 / 字符数 / 文本长度      → 字
+  图片数 / 张数 → 张；页数 → 页；segment → segment
+  认不出或认错时，用 --unit 字 --label 字数 手动指定。
+AHT 支持秒数或 mm:ss。非数值的 AHT（deferred / In check / Not found / 空）自动剔除并单独列出。
 """
 import argparse, csv, datetime, json, math, sys
 
 BAD = {'deferred', 'defered', 'incheck', 'notfound', 'n/a', 'na', '-', ''}
 ALIAS = {   # 按优先级排列，越靠前越优先
     'aht':    ['aht', '处理时长', '标注时长', '耗时', '工时', 'handlingtime', 'handletime', 'time'],
-    'dur':    ['视频时长', 'videoduration', 'videolength', '视频长度', 'duration', 'video', 'length',
-               'dur', '时长', 'segment', 'segmentnumber', 'size'],
+    'dur':    ['视频时长', 'videoduration', 'videolength', '视频长度', 'duration',
+               '字数', '字符数', '文本长度', '文字数', 'wordcount', 'words', 'chars', 'characters', 'charcount',
+               'tokens', '图片数', '张数', 'images', '页数', 'pages', 'segment', 'segmentnumber', 'segments',
+               'video', 'dur', '时长', 'length', '长度', 'size'],
     'id':     ['caseid', 'itemid', 'case', 'item', 'id', '任务id', '编号', 'taskid'],
     'order':  ['标注顺序', '顺序', '序号', 'order', 'seq', 'sequence', 'no', '#'],
     'worker': ['标注员', '处理人', 'annotator', 'worker', 'operator', 'user', '账号'],
@@ -41,7 +47,8 @@ def norm(s):
     return str(s).strip().lower().replace('_', '').replace('-', '').replace(' ', '')
 
 def to_sec(s):
-    s = str(s).strip().lower().replace('秒', '').rstrip('s').strip()
+    s = str(s).strip().lower().replace('秒', '').replace('字', '').replace(',', '').replace('，', '')
+    s = s.rstrip('s').strip()
     if not s:
         raise ValueError
     if ':' in s:
@@ -71,10 +78,35 @@ def t975(df):
 
 def hr(t): print('\n' + '=' * 68 + '\n' + t + '\n' + '=' * 68)
 
-UNIT = '秒'   # 规模变量的单位；视频时长是秒，其他如 segment / 字
+UNIT, LABEL, DUR_HEAD = '秒', '视频时长', ''   # 规模的单位、叫法、原始列名
+UNIT_BY_HEADER = {   # 列名 → (单位, 叫法)
+    **{k: ('秒', '视频时长') for k in ['视频时长', 'videoduration', 'videolength', '视频长度',
+                                     'duration', 'video', 'dur', '时长']},
+    **{k: ('字', '字数') for k in ['字数', '字符数', '文本长度', '文字数', 'chars', 'characters', 'charcount']},
+    **{k: ('词', '词数') for k in ['wordcount', 'words']},
+    'tokens': ('token', 'token 数'),
+    **{k: ('张', '图片数') for k in ['图片数', '张数', 'images']},
+    **{k: ('页', '页数') for k in ['页数', 'pages']},
+    **{k: ('segment', 'segment 数') for k in ['segment', 'segmentnumber', 'segments']},
+}
+def set_unit(unit, label, head):
+    guess = UNIT_BY_HEADER.get(norm(head))
+    if unit:
+        u, how = unit, '手动指定'
+        l = guess[1] if guess and guess[0] == unit else '规模'
+    elif guess:
+        u, l, how = guess[0], guess[1], '按列名自动识别'
+    else:
+        u, l, how = '单位', '规模', '列名认不出单位，建议用 --unit 指定，如 --unit 字'
+    return u, (label or l), how
+def per_scale(b):
+    """每单位多花太小时，换算成「每 10/100/1000 个单位」更好读"""
+    for k in (1, 10, 100, 1000, 10000):
+        if abs(b) * k >= 10: return k
+    return 10000
 def fd(d): return fmt(d) if UNIT == '秒' else f'{round(d, 1):g} {UNIT}'
 def rate(): return '每秒多花' if UNIT == '秒' else f'每{UNIT}多花'
-def lbl(): return '视频时长' if UNIT == '秒' else '规模'
+def lbl(): return LABEL
 
 
 # ---------------- 读表 ----------------
@@ -96,10 +128,12 @@ def load(path, dur_col=None, aht_col=None, need_aht=True):
         rows = [r for r in csv.reader(f) if any(c.strip() for c in r)]
     if len(rows) < 2: sys.exit(f'{path} 没有数据行')
     head = [norm(c) for c in rows[0]]
+    global DUR_HEAD
     ia = (resolve(head, aht_col) if aht_col else pick(head, 'aht')) if need_aht else None
     idur = resolve(head, dur_col) if dur_col else pick(head, 'dur', exclude={ia})
     if idur is None or (need_aht and ia is None):
-        sys.exit('需要「视频时长」和「AHT」两列，识别不到时用 --dur-col / --aht-col 指定列名或位置')
+        sys.exit('需要「规模」（视频时长 / 字数 / 图片数…）和「AHT」两列，识别不到时用 --dur-col / --aht-col 指定列名或位置')
+    DUR_HEAD = rows[0][idur].strip()
     used = {ia, idur}
     iid, iord, iw = (pick(head, k, exclude=used) for k in ('id', 'order', 'worker'))
 
@@ -178,23 +212,27 @@ def explain(M):
     if M['mode'] == 'origin':
         print(f'  起步时间    按 0 处理（完全按比例）')
     else:
-        print(f'  起步时间    {fmt(M["a"])}（{M["a"]:.0f}s）   ← 不管视频多长都要花的')
+        print(f'  起步时间    {fmt(M["a"])}（{M["a"]:.0f}s）   ← 不管多长都要花的')
     if UNIT == '秒':
         print(f'  每秒多花    {M["b"]:.2f} 秒              ← 视频每长 1 秒，多花这么多')
         print(f'              即视频每长 1 分钟，多花 {fmt(M["b"] * 60)}')
     else:
-        print(f'  每{UNIT}多花  {M["b"]:.2f} 秒              ← 每多 1 {UNIT}，多花这么多')
+        print(f'  {rate()}    {M["b"]:.3g} 秒              ← 每多 1 {UNIT}，多花这么多')
+        k = per_scale(M['b'])
+        if k > 1:
+            print(f'              即每 {k} {UNIT}多花 {fmt(M["b"] * k)}')
 
 
 # ---------------- fit ----------------
 def cmd_fit(a):
-    global UNIT
-    UNIT = a.unit
+    global UNIT, LABEL
     is_trial = not a.vs and '项目经理' in a.level
     rows, dropped, has_order, has_worker = load(a.data, a.dur_col, a.aht_col)
+    UNIT, LABEL, how = set_unit(a.unit, a.label, DUR_HEAD)
     hr('① 数据')
     print(f'  有效 {len(rows)} 条' + (f'，剔除 {len(dropped)} 条无效 AHT：'
           + '、'.join(f'{d["id"]}({d["raw"]})' for d in dropped[:6]) if dropped else ''))
+    print(f'  规模：「{DUR_HEAD}」列，单位「{UNIT}」（{how}）')
     print(f'  顺序依据：{"表里的顺序列" if has_order else "文件里的行顺序（没找到顺序列）"}')
 
     # 热身期
@@ -216,8 +254,8 @@ def cmd_fit(a):
 
     x = [r['dur'] for r in rows]; y = [r['aht'] for r in rows]
     dmin, dmax = min(x), max(x)
-    print(f'  {lbl():<8}{fd(dmin)} – {fd(dmax)}，平均 {fd(mean(x))}')
-    print(f'  AHT       {fmt(min(y))} – {fmt(max(y))}，平均 {fmt(mean(y))}')
+    print(f'  {lbl()}：{fd(dmin)} – {fd(dmax)}，平均 {fd(mean(x))}')
+    print(f'  AHT：{fmt(min(y))} – {fmt(max(y))}，平均 {fmt(mean(y))}')
 
     hr('② 数据质量')
     warn = 0
@@ -286,7 +324,7 @@ def cmd_fit(a):
     if pdur < dmin or pdur > dmax:
         print(f'  ⚠ 生产平均时长超出了本表范围（{fd(dmin)}–{fd(dmax)}），基线是外推的，不可靠')
     if outside:
-        print(f'  ⚠ 生产里有 {outside} 条视频超出本表时长范围')
+        print(f'  ⚠ 生产里有 {outside} 条超出本表的{lbl()}范围')
 
     # 对比项目经理
     ratio = None
@@ -297,13 +335,13 @@ def cmd_fit(a):
         ratio = mean(y) / mean(p)
         rg = gmean([yi / pi for yi, pi in zip(y, p)])
         word = '慢' if ratio > 1 else '快'
-        print(f'  同样长度的视频，标注员整体比项目经理{word} {abs(ratio - 1) * 100:.0f}%'
+        print(f'  同样{lbl()}的 case，标注员整体比项目经理{word} {abs(ratio - 1) * 100:.0f}%'
               f'（换算系数 {ratio:.2f}；按每条比值的几何平均是 {rg:.2f}）')
         print(f'  项目经理的基线要乘 {ratio:.2f} 才是标注员水平')
         print(f'  下个项目只有项目经理试标时，可以先用这个系数：试标基线 × {ratio:.2f}')
         outside_pm = sum(1 for r in rows if r['dur'] < PM['dmin'] or r['dur'] > PM['dmax'])
         if outside_pm:
-            print(f'  ⚠ 生产里 {outside_pm} 条视频超出试标的时长范围，这部分的对比是外推的')
+            print(f'  ⚠ 生产里 {outside_pm} 条超出试标的{lbl()}范围，这部分的对比是外推的')
 
         if has_worker and M['mode'] != 'flat':
             hr('⑥ 各标注员（相对本次规律）')
@@ -324,7 +362,7 @@ def cmd_fit(a):
         keep = {k: v for k, v in M.items() if k != 'res'}
         keep.update({'dmin': dmin, 'dmax': dmax, 'level': level, 'source': a.data,
                      'created': datetime.date.today().isoformat(), 'baseline': y0, 'prod_mean': pdur,
-                     'unit': UNIT})
+                     'unit': UNIT, 'label': LABEL})
         if ratio: keep['pm_ratio'] = ratio
         json.dump(keep, open(a.save, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
         print(f'\n  模型已保存：{a.save}')
@@ -333,9 +371,10 @@ def cmd_fit(a):
 
 # ---------------- predict ----------------
 def cmd_predict(a):
-    global UNIT
+    global UNIT, LABEL
     M = json.load(open(a.model, encoding='utf-8'))
     UNIT = M.get('unit', '秒')
+    LABEL = M.get('label', '视频时长' if UNIT == '秒' else '规模')
     if a.mean is not None:
         durs, ids = [a.mean], None
     elif a.durations:
@@ -356,13 +395,13 @@ def cmd_predict(a):
     print(f'  95% 区间   {lo:.0f}–{hi:.0f}s')
     print(f'  取整到 10 秒：{ceil10(y)}s')
     if M['mode'] == 'flat':
-        print('  （这个模型不按时长调，所以跟本批视频长短无关）')
+        print(f'  （这个模型不按{lbl()}调，所以跟本批长短无关）')
 
     out = [d for d in durs if d < M['dmin'] or d > M['dmax']]
     if dbar < M['dmin'] or dbar > M['dmax']:
         print(f'\n  ⚠ 本批平均时长超出了定标范围（{fd(M["dmin"])}–{fd(M["dmax"])}），目标是外推的，不可靠')
     elif out and ids:
-        print(f'\n  ⚠ 本批有 {len(out)} 条（{len(out) / len(durs) * 100:.0f}%）视频超出定标范围'
+        print(f'\n  ⚠ 本批有 {len(out)} 条（{len(out) / len(durs) * 100:.0f}%）超出定标范围'
               f'（{fd(M["dmin"])}–{fd(M["dmax"])}），最长 {fd(max(durs))}')
     if '项目经理' in M['level'] and a.ratio == 1:
         print(f'  ⚠ 这是项目经理水平的模型，还没有用生产数据校准')
@@ -378,26 +417,27 @@ def cmd_predict(a):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='按视频时长定 AHT 目标')
+    ap = argparse.ArgumentParser(description='按规模（视频时长 / 字数 / 图片数…）定 AHT 目标')
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     f = sub.add_parser('fit', help='用逐条数据定标（试标或生产）')
     f.add_argument('data')
     f.add_argument('--warmup', type=int, default=0, help='去掉前 N 条热身数据')
-    f.add_argument('--prod-mean', type=to_sec, help='生产视频的平均时长（秒或 mm:ss）')
-    f.add_argument('--prod-durations', help='生产视频时长列表 CSV，用来算基线')
+    f.add_argument('--prod-mean', type=to_sec, help='生产时的平均规模（视频秒数或 mm:ss / 字数 / 张数…）')
+    f.add_argument('--prod-durations', help='生产的规模列表 CSV，用来算基线')
     f.add_argument('--vs', help='项目经理的模型 JSON；给了就算「项目经理 → 标注员」换算系数')
     f.add_argument('--level', default='项目经理试标', help='这份数据是谁做的（写进模型）')
-    f.add_argument('--unit', default='秒', help='规模变量的单位：视频时长用默认的「秒」，其他如 segment')
+    f.add_argument('--unit', help='单位：默认按列名自动识别（视频时长→秒，字数→字…），认错时手动指定')
+    f.add_argument('--label', help='规模的叫法，如 字数、图片数（默认按列名）')
     f.add_argument('--force-linear', action='store_true', help='时长解释力低时也强制按时长算')
     f.add_argument('--save', help='保存模型 JSON')
     f.add_argument('--dur-col'); f.add_argument('--aht-col')
     f.set_defaults(func=cmd_fit)
 
-    p = sub.add_parser('predict', help='给新一批视频出目标')
+    p = sub.add_parser('predict', help='给新一批出目标')
     p.add_argument('--model', required=True)
-    p.add_argument('--mean', type=to_sec, help='这批视频的平均时长（秒或 mm:ss）')
-    p.add_argument('--durations', help='这批视频的时长列表 CSV')
+    p.add_argument('--mean', type=to_sec, help='这批的平均规模（视频秒数或 mm:ss / 字数 / 张数…）')
+    p.add_argument('--durations', help='这批的规模列表 CSV')
     p.add_argument('--ratio', type=float, default=1.0, help='乘一个换算系数（如上个项目算出的 1.25）')
     p.add_argument('--per-case', help='逐条目标输出 CSV')
     p.add_argument('--dur-col')
