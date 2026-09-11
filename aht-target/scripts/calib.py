@@ -207,12 +207,12 @@ def pred_ci(M, dbar):
 
 def explain(M):
     if M['mode'] == 'flat':
-        print(f'  不按{lbl()}调：每条都按 {fmt(M["a"])}（{M["a"]:.0f}s）算')
+        print(f'  不按{lbl()}调：每条都按 {fmt(M["a"])}（{M["a"]:.0f} 秒）算')
         return
     if M['mode'] == 'origin':
         print(f'  起步时间    按 0 处理（完全按比例）')
     else:
-        print(f'  起步时间    {fmt(M["a"])}（{M["a"]:.0f}s）   ← 不管多长都要花的')
+        print(f'  起步时间    {fmt(M["a"])}' + (f'（{M["a"]:.0f} 秒）' if M['a'] >= 60 else '') + '   ← 不管多长都要花的')
     if UNIT == '秒':
         print(f'  每秒多花    {M["b"]:.2f} 秒              ← 视频每长 1 秒，多花这么多')
         print(f'              即视频每长 1 分钟，多花 {fmt(M["b"] * 60)}')
@@ -293,7 +293,7 @@ def cmd_fit(a):
             print(f'    改为不分长短、统一用平均值。（确定要按{lbl()}算就加 --force-linear）')
     elif L['a'] < 0:
         M = fit_origin(x, y)
-        print(f'  → 算出来的起步时间是负数（{L["a"]:.0f}s），实际不可能，样本少时常见。改用「完全按比例」')
+        print(f'  → 算出来的起步时间是负数（{L["a"]:.0f} 秒），实际不可能，样本少时常见。改用「完全按比例」')
     else:
         M = L
     explain(M)
@@ -316,8 +316,8 @@ def cmd_fit(a):
     hr('④ 基线')
     y0, lo, hi = pred_ci(M, pdur)
     print(f'  按{src} {fd(pdur)} 算')
-    print(f'  基线 AHT   {fmt(y0)}（{y0:.0f}s），大概率在 {lo:.0f}–{hi:.0f}s 之间')
-    print(f'  取整到 10 秒：{ceil10(y0)}s')
+    print(f'  基线 AHT   {fmt(y0)}（{y0:.0f} 秒），大概率在 {lo:.0f}–{hi:.0f} 秒之间')
+    print(f'  取整到 10 秒：{ceil10(y0)} 秒')
     print(f'  这是「{level}」的水平')
     if not a.prod_durations and not a.prod_mean:
         print(f'  ⚠ 没给生产的{lbl()}，用的是本表的平均值。生产和本表长短分布不一样时，用 --prod-mean 或 --prod-durations')
@@ -359,7 +359,7 @@ def cmd_fit(a):
         if a.save:
             print(f'     python3 calib.py fit 生产数据.csv --vs {a.save} --save prod.json')
         else:
-            print('     （这次没保存模型。重跑时加 --save pm.json 保存下来，之后才能拿来对比）')
+            print('     （这次没存下结果。重跑时加 --save pm.json，把起步时间和每单位多花存成文件，之后才能拿来对比）')
 
     if a.save:
         keep = {k: v for k, v in M.items() if k != 'res'}
@@ -368,7 +368,7 @@ def cmd_fit(a):
                      'unit': UNIT, 'label': LABEL})
         if ratio: keep['pm_ratio'] = ratio
         json.dump(keep, open(a.save, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
-        print(f'\n  模型已保存：{a.save}')
+        print(f'\n  结果已存到 {a.save}（起步时间、每单位多花等，后面的步骤要用）')
     print()
 
 
@@ -390,13 +390,13 @@ def cmd_predict(a):
     y, lo, hi = pred_ci(M, dbar)
     y, lo, hi = y * a.ratio, lo * a.ratio, hi * a.ratio
     hr('本批 AHT 目标')
-    print(f'  模型：{M["source"]}（{M["level"]}，{M["created"]}，{M["n"]} 条）')
+    print(f'  依据：{M["source"]} 算出的结果（{M["level"]}，{M["created"]}，{M["n"]} 条）')
     if a.ratio != 1:
         print(f'  已乘换算系数 {a.ratio:.2f}')
     print(f'  本批 {len(durs)} 条，平均{lbl()} {fd(dbar)}' if ids else f'  本批平均{lbl()} {fd(dbar)}')
-    print(f'\n  目标 AHT   {fmt(y)}（{y:.0f}s）')
-    print(f'  大概率在   {lo:.0f}–{hi:.0f}s 之间')
-    print(f'  取整到 10 秒：{ceil10(y)}s')
+    print(f'\n  目标 AHT   {fmt(y)}（{y:.0f} 秒）')
+    print(f'  大概率在   {lo:.0f}–{hi:.0f} 秒之间')
+    print(f'  取整到 10 秒：{ceil10(y)} 秒')
     if M['mode'] == 'flat':
         print(f'  （这个模型不按{lbl()}调，所以跟本批长短无关）')
 
@@ -407,7 +407,7 @@ def cmd_predict(a):
         print(f'\n  ⚠ 本批有 {len(out)} 条（{len(out) / len(durs) * 100:.0f}%）超出定标范围'
               f'（{fd(M["dmin"])}–{fd(M["dmax"])}），最长 {fd(max(durs))}')
     if '项目经理' in M['level'] and a.ratio == 1:
-        print(f'  ⚠ 这是项目经理水平的模型，还没有用生产数据校准')
+        print(f'  ⚠ 这是按项目经理试标算的，还没有用标注员的数据校准过')
 
     if a.per_case:
         if not ids: sys.exit('--per-case 需要配合 --durations 使用')
@@ -439,19 +439,19 @@ def main():
     f.add_argument('--warmup', type=int, default=0, help='去掉前 N 条热身数据')
     f.add_argument('--prod-mean', type=to_sec, help='生产时的平均规模（视频秒数或 mm:ss / 字数 / 张数…）')
     f.add_argument('--prod-durations', help='生产的规模列表 CSV，用来算基线')
-    f.add_argument('--vs', help='项目经理的模型 JSON；给了就算「项目经理 → 标注员」换算系数')
+    f.add_argument('--vs', help='项目经理试标时 --save 存下的文件；给了就算「标注员比项目经理慢/快多少」')
     f.add_argument('--level', default='项目经理试标', help='这份数据是谁做的（写进模型）')
     f.add_argument('--unit', help='单位：默认按列名自动识别（视频时长→秒，字数→字…），认错时手动指定')
     f.add_argument('--label', help='规模的叫法，如 字数、图片数（默认按列名）')
     f.add_argument('--force-linear', action='store_true', help='时长解释力低时也强制按时长算')
-    f.add_argument('--save', help='保存模型 JSON')
+    f.add_argument('--save', help='把结果（起步时间、每单位多花等）存成文件，后面的步骤要用，如 pm.json')
     f.add_argument('--dur-col', help='规模在哪一列（列名或从 0 数起的位置），认不出时才需要')
     f.add_argument('--aht-col', help='AHT 在哪一列（列名或从 0 数起的位置），认不出时才需要')
     f.set_defaults(func=cmd_fit)
 
     p = sub.add_parser('predict', help='给新一批出目标',
                        description='用 fit 保存的模型，按这批的平均规模算出 AHT 目标')
-    p.add_argument('--model', required=True)
+    p.add_argument('--model', required=True, help='fit 时用 --save 存下的文件，如 prod.json')
     p.add_argument('--mean', type=to_sec, help='这批的平均规模（视频秒数或 mm:ss / 字数 / 张数…）')
     p.add_argument('--durations', help='这批的规模列表 CSV')
     p.add_argument('--ratio', type=float, default=1.0, help='乘一个换算系数（如上个项目算出的 1.25）')

@@ -142,9 +142,11 @@ def load(path, cols=None):
             araw = r[idx['aht']].strip()
             w = r[idx['worker']].strip() if idx['worker'] is not None else ''
             it = r[idx['item']].strip() if idx['item'] is not None else ''
-            if norm(araw) in BAD:
+            try:                                   # 不是数字的一律算无效，不管平台叫它什么
+                if norm(araw) in BAD: raise ValueError
+                v = float(araw.replace(',', ''))
+            except ValueError:
                 dropped.append((w, it, seg, araw or '(空)')); continue
-            v = float(araw)
             if v <= 0:
                 dropped.append((w, it, seg, '0 或负数')); continue
             out.append((w, it, seg, v))
@@ -174,6 +176,7 @@ def main():
     ap.add_argument('--t-long', type=float, help='长 case 的平均时间（秒）。有更新的实测值时，用它代替本文件算出的')
     ap.add_argument('--expect-seg', type=float, help='核对用：表格汇总行里的平均规模')
     ap.add_argument('--expect-aht', type=float, help='核对用：表格汇总行里的平均 AHT')
+    ap.add_argument('--tech', action='store_true', help='多显示统计细节（R²、t 值、几何平均等），给懂统计的人看')
     a = ap.parse_args()
 
     rows, dropped = load(a.data, a.cols)
@@ -252,8 +255,8 @@ def main():
         notes.append(f'⚠ 有 {len(dropped)} 条没有有效时间（{kinds}），它们的{sm}平均 {miss[0]:.1f}，比有效记录的 '
                      f'{miss[1]:.1f} 高：最费时的 case 恰好缺数据，长 case 的平均时间可能算低了')
     if far:
-        notes.append(f'⚠ {"、".join(f"{q * 100:g}%" for q in far)} 的占比比较高，属于往外推算。'
-                     f'长 case 变多时，长 case 本身的平均时间也可能跟着变（见最后一节）')
+        notes.append(f'⚠ {"、".join(f"{q * 100:g}%" for q in far)} 的占比比较高：如果现在的实际占比远低于它，'
+                     f'这个结果是按现有数据往外推的。长 case 变多时，长 case 本身的平均时间也可能跟着变（见最后一节）')
     if rat:
         extra = f'；做过 3 条以上的人里，最快和最慢的差 {span[1] / span[0]:.1f} 倍' if span else ''
         notes.append(f'· 同一个 case 换个人做，一般慢的人是快的人的 {gmean(rat):.1f} 倍{extra}。'
@@ -303,8 +306,7 @@ def main():
             print('  没有 case 被两个人以上做过，没法把「人的差异」和「case 的差异」分开')
         else:
             print(f'  有 {len(pairs)} 个 case 被两个人以上做过（共 {sum(len(v) for v in pairs.values())} 条记录）')
-            print(f'  慢的人是快的人的：一般 {gmean(rat):.1f} 倍'
-                  f'（中间值 {median(rat):.2f}，最少 {min(rat):.2f}，最多 {max(rat):.2f}）')
+            print(f'  慢的人一般是快的人的 {gmean(rat):.1f} 倍（最少 {min(rat):.2f} 倍，最多 {max(rat):.2f} 倍）')
             for th in (1.5, 2, 3):
                 c = sum(1 for r in rat if r >= th)
                 print(f'    差 {th:g} 倍以上：{c}/{len(rat)}（{c / len(rat) * 100:.0f}%）')
@@ -315,9 +317,10 @@ def main():
                       f'{v[-1][2]:>7.0f} 秒（{v[-1][0]}）  差 {v[-1][2] / v[0][2]:.2f} 倍')
             b, w = split
             print(f'\n  时间差异从哪来（同一个 case 的{sm}是一样的，所以换人造成的差异跟长短无关）：')
-            print(f'    case 本身不同   {b:.1f}%')
+            print(f'    case 本身不同   {b:.1f}%   （长短、难易、内容上的差别都算在里面）')
             print(f'    换了个人       {w:.1f}%')
-            print('  （技术细节：倍数取几何平均；按 case 分组，对 log(AHT) 做方差分解）')
+            if a.tech:
+                print(f'  （技术细节：倍数取几何平均，中位数 {median(rat):.2f}；按 case 分组，对 log(AHT) 做方差分解）')
             print('\n  ⚠ 先确认：这是两个人各自独立做同一个 case，还是一个人做、一个人审？'
                   '后者两个时间做的不是同一件事，不能这么比')
         if ks:
@@ -341,10 +344,15 @@ def main():
             ch = math.exp(b0 * k) - 1
             sig = se_b and abs(b0 / se_b) >= 2
             print(f'  {sh}每多 {k:g}，时间大约{"多" if ch >= 0 else "少"} {abs(ch) * 100:.0f}%')
-            print(f'  {sh}能解释时间差异的 {r2 * 100:.0f}%（{"统计上靠得住" if sig else "统计上说不准，可能是巧合"}）')
+            print(f'  {sh}能解释时间差异的 {r2 * 100:.0f}%：'
+                  + (('这个影响是真实存在的' + ('，只是不大' if r2 < 0.15 else '')) if sig else '看不出确定的影响，可能只是巧合'))
+            if split and split[0] is not None and r2 * 100 < split[0]:
+                print(f'  和前面对照：「case 本身不同」占 {split[0]:.0f}%，其中长短只占一小部分，'
+                      f'其余来自难易、内容这些长短以外的差别')
             if r2 < 0.15:
                 print('  解释得少 ≠ 没关系：可能是人和人的差异、挂机记录太大，把长短的影响盖住了')
-            print(f'  （技术细节：log(AHT) 对{sm}回归，斜率 {b0:+.4f} ± {se_b:.4f}，t = {b0 / se_b:.2f}，R² = {r2:.3f}）')
+            if a.tech:
+                print(f'  （技术细节：log(AHT) 对{sm}回归，斜率 {b0:+.4f} ± {se_b:.4f}，t = {b0 / se_b:.2f}，R² = {r2:.3f}）')
 
     # ---- 特别慢的记录 ----
     hr('特别慢的记录')
@@ -376,9 +384,9 @@ def main():
         print(f'  {q * 100:>9g}%   {q * (T_long - T_short):>+7.0f} 秒  {target(q):>6.0f} 秒   '
               + (f'{lo:.0f}–{hi:.0f} 秒' if se_L else '（长 case 平均时间是指定值，没有范围）'))
     if far:
-        print(f'\n  ⚠ {"、".join(f"{q * 100:g}%" for q in far)} 属于往外推算。代入前先确认：')
+        print(f'\n  ⚠ {"、".join(f"{q * 100:g}%" for q in far)} 的占比比较高。如果现在的实际占比远低于它，代入前先确认：')
         print(f'     · 长 case 的平均{sm}往哪走：变少了，长 case 平均时间要往下调；变多了，要往上调')
-        print('     · 有新测的长 case 平均时间，就直接用 --t-long 代进来，别拿旧的往外推')
+        print('     · 手上有更新的长 case 平均时间，就用 --t-long 代进来，不要拿旧的数硬推')
     print(f'\n  建议：每天按当天实际的长 case 占比算目标 → 当日目标 = {T_short:.0f} + {slope:.1f} × 当天长 case 占比(%)')
     print()
 
