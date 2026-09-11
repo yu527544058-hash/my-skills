@@ -161,8 +161,8 @@ def main():
         ds = [d[2] for d in dropped if d[2] is not None]
         if has_seg and ds:
             gap = (mean(ds) - mean(S)) / mean(S) if mean(S) else 0
-            tag = ('  ← 缺失偏向贵的一端，T_长 被低估' if gap > 0.05
-                   else '  ← 缺失偏向便宜的一端' if gap < -0.05 else '  （无明显方向性）')
+            tag = ('  ← 缺失偏向长的一端，T_长 被低估' if gap > 0.05
+                   else '  ← 缺失偏向短的一端' if gap < -0.05 else '  （无明显方向性）')
             print(f'  无效行的{SZ}均值 {mean(ds):.1f} vs 有值行 {mean(S):.1f}{tag}')
         kinds = sorted({d[3] for d in dropped})
         print(f'  无效类型: {", ".join(kinds)}')
@@ -220,7 +220,7 @@ def main():
     # ---- 规模变量关系 ----
     if not has_seg:
         hr('⑤ 规模变量')
-        print(f'  数据里没有规模列，跳过。混合均值模型不依赖它，但少了「贵在哪」的拆解')
+        print(f'  数据里没有规模列，跳过。混合均值模型不依赖它，但少了「时间花在哪」的拆解')
     else:
       hr(f'⑤ {SZ} 的作用')
       a0, b0, r2, se_b = ols(S, [math.log(t) for t in T])
@@ -286,7 +286,7 @@ def main():
         far = [q for q in a.q if q > 0.12]
         if far:
             print(f'\n  ⚠ {", ".join(f"{q*100:.0f}%" for q in far)} 属于外推。代入前先确认:')
-            print(f'     · 贵 case 的平均{SZ}往哪走？降→T_长 调低，升→T_长 调高')
+            print(f'     · 长 case 的平均{SZ}往哪走？降→T_长 调低，升→T_长 调高')
             print('     · 有实测的新 T_长 就用实测值，别拿旧 T_长 线性外推（用 --t-long 覆盖）')
 
     print(f'\n  建议给动态形式而非单个数字:  当日目标 = {T_short:.0f} + {slope:.2f} × 当天实际占比(%)')

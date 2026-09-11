@@ -23,7 +23,7 @@
 列名自动识别，并按列名自动定单位：
   视频时长 / duration          → 秒（支持 mm:ss）
   字数 / 字符数 / 文本长度      → 字
-  图片数 / 张数 → 张；页数 → 页；segment → segment
+  图片数 / 张数 → 张；segment → segment
   认不出或认错时，用 --unit 字 --label 字数 手动指定。
 AHT 支持秒数或 mm:ss。非数值的 AHT（deferred / In check / Not found / 空）自动剔除并单独列出。
 """
