@@ -4,10 +4,10 @@
 按「长短」定 AHT 目标：试标定标 → 生产重标 → 每批出目标。
 长短 = 影响处理时间的主要因素，也就是判断长 case、短 case 用的那个数：视频看时长，文本看字数，图片看张数。
 
-    每条处理时间 = 起步时间 + 每单位多花 × 长短
+    每条处理时间 = 起步时间 + 每单位增量 × 长短
 
   起步时间：不管多长都要花的时间（打开、加载、看要求、检查、提交）
-  每单位多花：长短每多 1 个单位（1 秒 / 1 个字 / 1 张图），要多花的处理时间
+  每单位增量：长短每多 1 个单位（1 秒 / 1 个字 / 1 张图），所增加的处理时间
 
 用法:
   # 阶段 1：项目经理试标定标（前 4 条是热身，不计入；生产时平均长短 75）
@@ -100,12 +100,12 @@ def set_unit(unit, label, head):
         u, l, how = '单位', '长短', '列名认不出单位，建议用 --unit 指定，如 --unit 字'
     return u, (label or l), how
 def per_scale(b):
-    """每单位多花太小时，换算成「每 10/100/1000 个单位」更好读"""
+    """每单位增量太小时，换算成「每 10/100/1000 个单位」更好读"""
     for k in (1, 10, 100, 1000, 10000):
         if abs(b) * k >= 10: return k
     return 10000
 def fd(d): return fmt(d) if UNIT == '秒' else f'{round(d, 1):g} {UNIT}'
-def rate(): return '每秒多花' if UNIT == '秒' else f'每{UNIT}多花'
+def rate(): return '每秒增加' if UNIT == '秒' else f'每{UNIT}增加'
 def lbl(): return LABEL
 
 
@@ -214,13 +214,13 @@ def explain(M):
     else:
         print(f'  起步时间    {fmt(M["a"])}' + (f'（{M["a"]:.0f} 秒）' if M['a'] >= 60 else '') + '   ← 不管多长都要花的')
     if UNIT == '秒':
-        print(f'  每秒多花    {M["b"]:.2f} 秒              ← 视频每长 1 秒，多花这么多')
-        print(f'              即视频每长 1 分钟，多花 {fmt(M["b"] * 60)}')
+        print(f'  每秒增加    {M["b"]:.2f} 秒              ← 视频每长 1 秒，增加这么多')
+        print(f'              即视频每长 1 分钟，增加 {fmt(M["b"] * 60)}')
     else:
-        print(f'  {rate()}    {M["b"]:.3g} 秒              ← 每多 1 {UNIT}，多花这么多')
+        print(f'  {rate()}    {M["b"]:.3g} 秒              ← 每多 1 {UNIT}，增加这么多')
         k = per_scale(M['b'])
         if k > 1:
-            print(f'              即每 {k} {UNIT}多花 {fmt(M["b"] * k)}')
+            print(f'              即每 {k} {UNIT}增加 {fmt(M["b"] * k)}')
 
 
 # ---------------- fit ----------------
@@ -244,7 +244,7 @@ def cmd_fit(a):
         Mr = fit_linear([r['dur'] for r in rest], [r['aht'] for r in rest])
         over = mean([r['aht'] / max(pred(Mr, r['dur']), 1) for r in head5]) - 1
         if over > 0.15:
-            print(f'  ⚠ 前 5 条平均比后面的规律多花 {over * 100:.0f}% —— 像是热身期。'
+            print(f'  ⚠ 前 5 条平均比后面的规律高出 {over * 100:.0f}% —— 像是热身期。'
                   f'建议加 --warmup 5 重跑')
         else:
             print(f'  前 5 条和后面的规律差别不大（{over * 100:+.0f}%），没有明显热身期')
@@ -359,7 +359,7 @@ def cmd_fit(a):
         if a.save:
             print(f'     python3 calib.py fit 生产数据.csv --vs {a.save} --save prod.json')
         else:
-            print('     （这次没存下结果。重跑时加 --save pm.json，把起步时间和每单位多花存成文件，之后才能拿来对比）')
+            print('     （这次没存下结果。重跑时加 --save pm.json，把起步时间和每单位增量存成文件，之后才能拿来对比）')
 
     if a.save:
         keep = {k: v for k, v in M.items() if k != 'res'}
@@ -368,7 +368,7 @@ def cmd_fit(a):
                      'unit': UNIT, 'label': LABEL})
         if ratio: keep['pm_ratio'] = ratio
         json.dump(keep, open(a.save, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
-        print(f'\n  结果已存到 {a.save}（起步时间、每单位多花等，后面的步骤要用）')
+        print(f'\n  结果已存到 {a.save}（起步时间、每单位增量等，后面的步骤要用）')
     print()
 
 
@@ -434,7 +434,7 @@ def main():
     sub = ap.add_subparsers(dest='cmd', required=True)
 
     f = sub.add_parser('fit', help='用逐条数据定标（试标或正式生产的数据都行）',
-                       description='用逐条数据算出「起步时间」和「每单位多花」，给出基线 AHT')
+                       description='用逐条数据算出「起步时间」和「每单位增量」，给出基线 AHT')
     f.add_argument('data', help='CSV 文件：每行一个 case，要有长短（视频时长 / 字数…）和 AHT 两列')
     f.add_argument('--warmup', type=int, default=0, help='去掉前 N 条热身数据')
     f.add_argument('--prod-mean', type=to_sec, help='生产时的平均长短（视频秒数或 mm:ss / 字数 / 张数…）')
@@ -444,7 +444,7 @@ def main():
     f.add_argument('--unit', help='单位：默认按列名自动识别（视频时长→秒，字数→字…），认错时手动指定')
     f.add_argument('--label', help='长短的叫法，如 字数、图片数（默认按列名）')
     f.add_argument('--force-linear', action='store_true', help='时长解释力低时也强制按时长算')
-    f.add_argument('--save', help='把结果（起步时间、每单位多花等）存成文件，后面的步骤要用，如 pm.json')
+    f.add_argument('--save', help='把结果（起步时间、每单位增量等）存成文件，后面的步骤要用，如 pm.json')
     f.add_argument('--dur-col', help='长短在哪一列（列名或从 0 数起的位置），认不出时才需要')
     f.add_argument('--aht-col', help='AHT 在哪一列（列名或从 0 数起的位置），认不出时才需要')
     f.set_defaults(func=cmd_fit)
