@@ -252,6 +252,10 @@ def main():
         print('  各占比对应的目标见最后一节的表')
 
     notes = []
+    if not a.t_long and len(T) < 15:
+        notes.append(f'⚠ 本文件只有 {len(T)} 条长 case，算出的「长 case 平均每条 {T_long:.0f} 秒」不够稳 —— '
+                     f'少一条就能差出不少。要么多攒些数据，要么把长 case 的标准放宽一点、让更多 case 进来；'
+                     f'手上有更可靠的实测值时用 --t-long 指定')
     if big_outlier:
         notes.append(f'⚠ 有一条记录 {srt[0]:.0f} 秒（约 {dur_word(srt[0])}），单这一条就把长 case 的平均拉高了 '
                      f'{top_effect:.0f} 秒。像是挂机，建议核实')
