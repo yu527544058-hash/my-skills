@@ -16,6 +16,9 @@
   # 阶段 2：上线 2–3 天后用生产数据重标，顺带算出「项目经理 → 标注员」换算系数
   python3 calib.py fit prod.csv --vs pm.json --save prod.json
 
+  # 多因素：主因素之外再看「说话人数」，脚本会检验值不值得加
+  python3 calib.py fit trial.csv --factor 说话人数 --save pm.json
+
   # 阶段 3：每批出目标（给这批的平均长短，或给长短列表）
   python3 calib.py predict --model prod.json --mean 82
   python3 calib.py predict --model prod.json --durations batch.csv --per-case out.csv
@@ -79,6 +82,7 @@ def t975(df):
 def hr(t): print('\n' + '=' * 68 + '\n' + t + '\n' + '=' * 68)
 
 UNIT, LABEL, DUR_HEAD = '秒', '视频时长', ''   # 长短的单位、叫法、原始列名
+FACTOR_HEADS = []                               # 附加因素的列名
 UNIT_BY_HEADER = {   # 列名 → (单位, 叫法)
     **{k: ('秒', '视频时长') for k in ['视频时长', 'videoduration', 'videolength', '视频长度',
                                      'duration', 'video', 'dur', '时长']},
@@ -123,7 +127,7 @@ def resolve(head, spec):
         if c == norm(spec): return j
     sys.exit(f'找不到列「{spec}」，现有列：{", ".join(head)}')
 
-def load(path, dur_col=None, aht_col=None, need_aht=True):
+def load(path, dur_col=None, aht_col=None, need_aht=True, factor_cols=()):
     with open(path, encoding='utf-8-sig', newline='') as f:
         rows = [r for r in csv.reader(f) if any(c.strip() for c in r)]
     if len(rows) < 2: sys.exit(f'{path} 没有数据行')
@@ -134,17 +138,20 @@ def load(path, dur_col=None, aht_col=None, need_aht=True):
     if idur is None or (need_aht and ia is None):
         sys.exit('需要「长短」（视频时长 / 字数 / 图片数…）和「AHT」两列，识别不到时用 --dur-col / --aht-col 指定列名或位置')
     DUR_HEAD = rows[0][idur].strip()
-    used = {ia, idur}
+    global FACTOR_HEADS
+    ifac = [resolve(head, c) for c in factor_cols]
+    FACTOR_HEADS = [rows[0][j].strip() for j in ifac]
+    used = {ia, idur} | set(ifac)
     iid, iord, iw = (pick(head, k, exclude=used) for k in ('id', 'order', 'worker'))
 
     ok, dropped = [], []
     for k, r in enumerate(rows[1:]):
         r = r + [''] * len(head)
         try:
-            d = to_sec(r[idur])
+            d = to_sec(r[idur]); fx = [to_sec(r[j]) for j in ifac]
         except ValueError:
             continue
-        rec = {'id': r[iid].strip() if iid is not None else f'第{k + 1}行', 'dur': d, 'pos': k,
+        rec = {'fx': fx, 'id': r[iid].strip() if iid is not None else f'第{k + 1}行', 'dur': d, 'pos': k,
                'order': r[iord].strip() if iord is not None else None,
                'worker': r[iw].strip() if iw is not None else ''}
         if need_aht:
@@ -190,19 +197,81 @@ def fit_flat(x, y):
             'ybar': mean(y), 'sxx': sum((v - mean(x)) ** 2 for v in x), 'sxx0': sum(v * v for v in x),
             'res': [yi - mean(y) for yi in y]}
 
-def pred(M, d):
+def inv(A):
+    """矩阵求逆（高斯-约当），奇异时返回 None"""
+    n = len(A)
+    M = [A[i][:] + [1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    for c in range(n):
+        q = max(range(c, n), key=lambda r: abs(M[r][c]))
+        if abs(M[q][c]) < 1e-12: return None
+        M[c], M[q] = M[q], M[c]
+        pv = M[c][c]
+        for j in range(2 * n): M[c][j] /= pv
+        for r in range(n):
+            if r != c and M[r][c]:
+                f = M[r][c]
+                for j in range(2 * n): M[r][j] -= f * M[c][j]
+    return [row[n:] for row in M]
+
+def fit_multi(X, y):
+    """X 每行是 [主因素, 附加因素…]（不含截距）。单因素时结果与 fit_linear 一致"""
+    n, k = len(X), len(X[0]); p = k + 1
+    if n <= p: return None
+    D = [[1.0] + list(r) for r in X]
+    XtX = [[sum(D[i][r] * D[i][c] for i in range(n)) for c in range(p)] for r in range(p)]
+    IV = inv(XtX)
+    if IV is None: return None
+    Xty = [sum(D[i][r] * y[i] for i in range(n)) for r in range(p)]
+    co = [sum(IV[r][c] * Xty[c] for c in range(p)) for r in range(p)]
+    res = [y[i] - sum(c * v for c, v in zip(co, D[i])) for i in range(n)]
+    yb = mean(y); sst = sum((v - yb) ** 2 for v in y); sse = sum(r * r for r in res); df = n - p
+    return {'mode': 'multi', 'co': co, 'a': co[0], 'b': co[1], 'k': k, 'n': n, 'df': df,
+            's': math.sqrt(sse / df), 'r2': 1 - sse / sst if sst else 0.0,
+            'adj': 1 - (sse / df) / (sst / (n - 1)) if sst else float('nan'),
+            'xtxinv': IV, 'res': res, 'xbar': [mean([r[j] for r in X]) for j in range(k)]}
+
+def loo_mae(X, y):
+    """留一验证：每次留一条不参与计算，再用剩下的去预测它，返回平均差多少秒"""
+    e = []
+    for i in range(len(X)):
+        Mi = fit_multi(X[:i] + X[i + 1:], y[:i] + y[i + 1:])
+        if Mi is None: return float('nan')
+        e.append(abs(y[i] - (Mi['co'][0] + sum(c * v for c, v in zip(Mi['co'][1:], X[i])))))
+    return mean(e)
+
+def corr(u, v):
+    um, vm = mean(u), mean(v)
+    su = math.sqrt(sum((a - um) ** 2 for a in u)); sv = math.sqrt(sum((a - vm) ** 2 for a in v))
+    return sum((a - um) * (b - vm) for a, b in zip(u, v)) / (su * sv) if su and sv else 0.0
+
+
+def pred(M, d, fx=()):
+    if M.get('mode') == 'multi':
+        xs = [d] + list(fx)
+        need = len(M['co']) - 1
+        xs = (xs + list(M.get('xbar', [])))[:need] if len(xs) < need else xs[:need]
+        return M['co'][0] + sum(c * v for c, v in zip(M['co'][1:], xs))
     return M['a'] + M['b'] * d
 
-def pred_ci(M, dbar):
+def pred_ci(M, dbar, fx=()):
     """某批次平均时长 dbar 下的目标值及 95% 区间"""
     n, s = M['n'], M['s']
+    if M['mode'] == 'multi':
+        x0 = [1.0, dbar] + list(fx)
+        need = len(M['co'])
+        x0 = (x0 + [1.0] + list(M.get('xbar', [])))[:need] if len(x0) < need else x0[:need]
+        IV = M['xtxinv']
+        v = sum(x0[i] * sum(IV[i][j] * x0[j] for j in range(need)) for i in range(need))
+        se, df = s * math.sqrt(max(v, 0.0)), M['df']
+        yv = pred(M, dbar, fx); t = t975(df)
+        return yv, yv - t * se, yv + t * se
     if M['mode'] == 'flat':
         se, df = s / math.sqrt(n), n - 1
     elif M['mode'] == 'origin':
         se, df = s * dbar / math.sqrt(M['sxx0']), n - 1
     else:
         se, df = s * math.sqrt(1 / n + (dbar - M['xbar']) ** 2 / M['sxx']), n - 2
-    y = pred(M, dbar); t = t975(df)
+    y = pred(M, dbar, fx); t = t975(df)
     return y, y - t * se, y + t * se
 
 def explain(M):
@@ -226,8 +295,10 @@ def explain(M):
 # ---------------- fit ----------------
 def cmd_fit(a):
     global UNIT, LABEL
+    if len(a.factor) > 2:
+        sys.exit('附加因素最多 2 个（算上主因素共 3 个）。因素越多越需要数据，再多就算不准了')
     is_trial = not a.vs and '项目经理' in a.level
-    rows, dropped, has_order, has_worker = load(a.data, a.dur_col, a.aht_col)
+    rows, dropped, has_order, has_worker = load(a.data, a.dur_col, a.aht_col, factor_cols=a.factor)
     UNIT, LABEL, how = set_unit(a.unit, a.label, DUR_HEAD)
     hr('① 数据')
     print(f'  有效 {len(rows)} 条' + (f'，剔除 {len(dropped)} 条无效 AHT：'
@@ -302,6 +373,57 @@ def cmd_fit(a):
         for d in sorted({round(dmin), round(median(x)), round(dmax)}):
             print(f'  {fd(d):>8}   {fmt(pred(M, d))}')
 
+    # ---- 附加因素检验 ----
+    fxbar = ()
+    if a.factor:
+        print('\n  ── 附加因素检验 ──')
+        names = FACTOR_HEADS
+        F = [r['fx'] for r in rows]
+        fxbar = tuple(mean([r[j] for r in F]) for j in range(len(names)))
+        base = fit_multi([[d] for d in x], y)
+        full = fit_multi([[d] + list(f) for d, f in zip(x, F)], y)
+        ktot = 1 + len(names)
+        if full is None or base is None:
+            print('  ⚠ 这些因素算不出结果（多半是某一列完全不变，或和主因素重复），已忽略')
+            fxbar = ()
+        else:
+            if len(rows) < 15 * ktot:
+                print(f'  ⚠ {ktot} 个因素至少要 {15 * ktot} 条数据，现在只有 {len(rows)} 条 —— 结论仅供参考')
+            for j, nm in enumerate(names):
+                c = full['co'][2 + j]
+                print(f'  {nm}：每多 1 个单位，{"增加" if c >= 0 else "减少"} {abs(c):.3g} 秒')
+            m0 = loo_mae([[d] for d in x], y)
+            m1 = loo_mae([[d] + list(f) for d, f in zip(x, F)], y)
+            print(f'\n  1) 罚分版 R²          只用{lbl()} {base["adj"] * 100:.0f}%'
+                  f'  →  加上附加因素 {full["adj"] * 100:.0f}%')
+            print(f'  2) 拿没见过的数据试   平均差 {m0:.0f} 秒  →  平均差 {m1:.0f} 秒')
+            bad = [nm for j, nm in enumerate(names) if full['co'][2 + j] < 0]
+            print('  3) 作用方向           ' + ('全部为「越多越慢」，符合常理' if not bad
+                  else '、'.join(bad) + ' 算出「越多越快」，不符合常理'))
+            heavy = []
+            for j, nm in enumerate(names):
+                oth = [[d] + [f[t] for t in range(len(names)) if t != j] for d, f in zip(x, F)]
+                mj = fit_multi(oth, [f[j] for f in F])
+                if mj and mj['r2'] > 0.8: heavy.append((nm, mj['r2']))
+            for nm, rr in heavy:
+                print(f'  ⚠ {nm} 和其他因素跟得太紧（{rr * 100:.0f}% 重合），分不清谁的功劳')
+            ok = full['adj'] > base['adj'] and m1 < m0 and not bad and not heavy
+            print()
+            if ok:
+                print(f'  → 值得加。以下结果按「{lbl()} + {" + ".join(names)}」计算')
+                M = full
+            elif a.force_multi:
+                print('  → 检验没通过，但你加了 --force-multi，仍按多因素计算')
+                M = full
+            else:
+                why = []
+                if full['adj'] <= base['adj']: why.append('罚分版 R² 没变好')
+                if m1 >= m0: why.append('预测没见过的数据反而更差')
+                if bad: why.append('作用方向说不通')
+                if heavy: why.append('和主因素跟得太紧')
+                print(f'  → 不值得加（{"；".join(why)}），仍只用{lbl()}算。确定要加就加 --force-multi')
+                fxbar = ()
+
     # 生产时长分布
     if a.prod_durations:
         pr, _, _, _ = load(a.prod_durations, a.dur_col, need_aht=False)
@@ -314,8 +436,10 @@ def cmd_fit(a):
 
     level = '生产（标注员）' if a.vs else a.level
     hr('④ 基线')
-    y0, lo, hi = pred_ci(M, pdur)
+    y0, lo, hi = pred_ci(M, pdur, fxbar)
     print(f'  按{src} {fd(pdur)} 算')
+    if fxbar:
+        print('  ' + '、'.join(f'{n} 取平均值 {v:.2f}' for n, v in zip(FACTOR_HEADS, fxbar)))
     print(f'  基线 AHT   {fmt(y0)}（{y0:.0f} 秒），大概率在 {lo:.0f}–{hi:.0f} 秒之间')
     print(f'  取整到 10 秒：{ceil10(y0)} 秒')
     print(f'  这是「{level}」的水平')
@@ -346,7 +470,7 @@ def cmd_fit(a):
         if has_worker and M['mode'] != 'flat':
             hr('⑥ 各标注员（相对本次规律）')
             g = {}
-            for r in rows: g.setdefault(r['worker'], []).append(r['aht'] / max(pred(M, r['dur']), 1))
+            for r in rows: g.setdefault(r['worker'], []).append(r['aht'] / max(pred(M, r['dur'], r['fx']), 1))
             ws = sorted(((mean(v), k, len(v)) for k, v in g.items() if k), reverse=True)
             for m_, k, n_ in ws:
                 print(f'  {k:>16}  n={n_:>3}  {m_:.2f}x' + ('' if n_ >= 5 else '  （样本少，仅供参考）'))
@@ -363,6 +487,10 @@ def cmd_fit(a):
 
     if a.save:
         keep = {k: v for k, v in M.items() if k != 'res'}
+        if fxbar:
+            keep['factors'] = [{'name': n, 'coef': M['co'][2 + j], 'mean': v,
+                                'min': min(r['fx'][j] for r in rows), 'max': max(r['fx'][j] for r in rows)}
+                               for j, (n, v) in enumerate(zip(FACTOR_HEADS, fxbar))]
         keep.update({'dmin': dmin, 'dmax': dmax, 'level': level, 'source': a.data,
                      'created': datetime.date.today().isoformat(), 'baseline': y0, 'prod_mean': pdur,
                      'unit': UNIT, 'label': LABEL})
@@ -386,14 +514,32 @@ def cmd_predict(a):
     else:
         sys.exit('需要 --mean 这批平均时长，或 --durations 这批的时长列表')
 
+    FA = M.get('factors', [])
+    if FA:
+        if a.factor_mean:
+            if len(a.factor_mean) != len(FA):
+                sys.exit(f'这个模型有 {len(FA)} 个附加因素（{"、".join(f["name"] for f in FA)}），'
+                         f'要按同样顺序给 {len(FA)} 个 --factor-mean')
+            fxb = [float(v) for v in a.factor_mean]
+        else:
+            fxb = [f['mean'] for f in FA]
+    else:
+        fxb = []
     dbar = mean(durs)
-    y, lo, hi = pred_ci(M, dbar)
+    y, lo, hi = pred_ci(M, dbar, fxb)
     y, lo, hi = y * a.ratio, lo * a.ratio, hi * a.ratio
     hr('本批 AHT 目标')
     print(f'  依据：{M["source"]} 算出的结果（{M["level"]}，{M["created"]}，{M["n"]} 条）')
     if a.ratio != 1:
         print(f'  已乘换算系数 {a.ratio:.2f}')
     print(f'  本批 {len(durs)} 条，平均{lbl()} {fd(dbar)}' if ids else f'  本批平均{lbl()} {fd(dbar)}')
+    for f_, v in zip(FA, fxb):
+        src_ = '你给的本批平均值' if a.factor_mean else '定标时的平均值，本批没给'
+        print(f'  {f_["name"]} 取 {v:g}（{src_}）')
+        if v < f_['min'] or v > f_['max']:
+            print(f'  ⚠ {f_["name"]} 超出定标范围（{f_["min"]:g}–{f_["max"]:g}），这部分是外推的')
+    if FA and not a.factor_mean:
+        print(f'  → 更准的做法：从本批抽 30–50 条数一下，把平均值用 --factor-mean 给进来')
     print(f'\n  目标 AHT   {fmt(y)}（{y:.0f} 秒）')
     print(f'  大概率在   {lo:.0f}–{hi:.0f} 秒之间')
     print(f'  取整到 10 秒：{ceil10(y)} 秒')
@@ -414,7 +560,9 @@ def cmd_predict(a):
         with open(a.per_case, 'w', encoding='utf-8-sig', newline='') as f:
             w = csv.writer(f); w.writerow(['case_id', f'{lbl()}({UNIT})', '目标AHT(秒)'])
             for i, d in zip(ids, durs):
-                w.writerow([i, f'{d:g}', f'{pred(M, d) * a.ratio:.0f}'])
+                w.writerow([i, f'{d:g}', f'{pred(M, d, fxb) * a.ratio:.0f}'])
+            if FA:
+                print(f'  （附加因素按本批平均值算，不区分每条）')
         print(f'\n  逐条目标已写入：{a.per_case}')
     print()
 
@@ -443,6 +591,10 @@ def main():
     f.add_argument('--level', default='项目经理试标', help='这份数据是谁做的（写进模型）')
     f.add_argument('--unit', help='单位：默认按列名自动识别（视频时长→秒，字数→字…），认错时手动指定')
     f.add_argument('--label', help='长短的叫法，如 字数、图片数（默认按列名）')
+    f.add_argument('--factor', action='append', default=[], metavar='列名',
+                   help='附加因素所在的列，最多 2 个，可重复：--factor 说话人数 --factor 判断项数。'
+                        '会自动检验值不值得加，不值得就仍按单因素算')
+    f.add_argument('--force-multi', action='store_true', help='附加因素检验没通过时也强制用多因素')
     f.add_argument('--force-linear', action='store_true', help='时长解释力低时也强制按时长算')
     f.add_argument('--save', help='把结果（起步时间、每单位增量等）存成文件，后面的步骤要用，如 pm.json')
     f.add_argument('--dur-col', help='长短在哪一列（列名或从 0 数起的位置），认不出时才需要')
@@ -454,6 +606,9 @@ def main():
     p.add_argument('--model', required=True, help='fit 时用 --save 存下的文件，如 prod.json')
     p.add_argument('--mean', type=to_sec, help='这批的平均长短（视频秒数或 mm:ss / 字数 / 张数…）')
     p.add_argument('--durations', help='这批的长短列表 CSV')
+    p.add_argument('--factor-mean', action='append', default=[], metavar='数值',
+                   help='本批附加因素的平均值，顺序与 fit 时的 --factor 一致，可重复。'
+                        '抽 30–50 条估个平均值即可，不用全数')
     p.add_argument('--ratio', type=float, default=1.0, help='乘一个换算系数（如上个项目算出的 1.25）')
     p.add_argument('--per-case', help='逐条目标输出 CSV')
     p.add_argument('--dur-col', help='长短在哪一列（列名或从 0 数起的位置），认不出时才需要')
