@@ -19,6 +19,9 @@
   # 多因素：主因素之外再看「说话人数」，脚本会检验值不值得加
   python3 calib.py fit trial.csv --factor 说话人数 --save pm.json
 
+  # 隔一段时间检查公式还准不准（按时间先后给几批实际数据）
+  python3 calib.py check --model prod.json 第1批.csv 第2批.csv 第3批.csv
+
   # 阶段 3：每批出目标（给这批的平均长短，或给长短列表）
   python3 calib.py predict --model prod.json --mean 82
   python3 calib.py predict --model prod.json --durations batch.csv --per-case out.csv
@@ -80,6 +83,11 @@ def t975(df):
             + (3 * z**7 + 19 * z**5 + 17 * z**3 - 15 * z) / (384 * df**3))
 
 def hr(t): print('\n' + '=' * 68 + '\n' + t + '\n' + '=' * 68)
+
+def dw(t): return sum(2 if ord(c) > 0x2E80 else 1 for c in str(t))
+def pad(t, n, right=False):
+    sp = ' ' * max(n - dw(t), 0)
+    return sp + str(t) if right else str(t) + sp
 
 UNIT, LABEL, DUR_HEAD = '秒', '视频时长', ''   # 长短的单位、叫法、原始列名
 FACTOR_HEADS = []                               # 附加因素的列名
@@ -567,6 +575,104 @@ def cmd_predict(a):
     print()
 
 
+# ---------------- check ----------------
+def header_of(path):
+    with open(path, encoding='utf-8-sig', newline='') as f:
+        for r in csv.reader(f):
+            if any(c.strip() for c in r):
+                return [norm(c) for c in r]
+    return []
+
+
+def cmd_check(a):
+    """拿实际数据和公式比：这批还能不能用现有公式"""
+    global UNIT, LABEL
+    M = json.load(open(a.model, encoding='utf-8'))
+    UNIT = M.get('unit', '秒')
+    LABEL = M.get('label', '视频时长' if UNIT == '秒' else '长短')
+    FA = M.get('factors', [])
+
+    hr('公式还能不能用')
+    print(f'  依据：{M["source"]} 算出的公式（{M["level"]}，{M["created"]}，{M["n"]} 条）')
+    if a.ratio != 1:
+        print(f'  已乘换算系数 {a.ratio:.2f}')
+
+    batches, notes = [], []
+    for path in a.data:
+        short = path.split('/')[-1]
+        head = header_of(path)
+        names = [f['name'] for f in FA]
+        use = [n for n in names if norm(n) in head]
+        rows, dropped, _, _ = load(path, a.dur_col, a.aht_col,
+                                   factor_cols=(use if len(use) == len(names) else ()))
+        if FA and len(use) < len(names):
+            notes.append(f'· {short} 里没有{"、".join(names)}列，按定标时的平均值代入，结果会粗一些')
+            for r in rows:
+                r['fx'] = [f['mean'] for f in FA]
+        if len(rows) < 5:
+            notes.append(f'⚠ {short} 只有 {len(rows)} 条有效记录，太少，这一批的结论不可靠')
+        if not rows:
+            continue
+        exp = [pred(M, r['dur'], r['fx']) * a.ratio for r in rows]
+        act = [r['aht'] for r in rows]
+        tgt, real = mean(exp), mean(act)
+        bias = (real - tgt) / tgt if tgt else 0.0
+        high = sum(1 for e, y in zip(exp, act) if y > e)
+        out = sum(1 for r in rows if r['dur'] < M['dmin'] or r['dur'] > M['dmax'])
+        batches.append({'name': short, 'n': len(rows), 'dbar': mean([r['dur'] for r in rows]),
+                        'tgt': tgt, 'real': real, 'bias': bias, 'high': high, 'out': out})
+        if dropped:
+            notes.append(f'· {short} 有 {len(dropped)} 条无效 AHT，已剔除')
+        if out:
+            notes.append(f'· {short} 有 {out} 条（{out / len(rows) * 100:.0f}%）的{lbl()}'
+                         f'超出定标范围（{fd(M["dmin"])}–{fd(M["dmax"])}）')
+
+    if not batches:
+        sys.exit('没有可用的数据')
+
+    W = max(10, max(dw(b['name']) for b in batches) + 2)
+    print('\n  ' + pad('批次', W) + pad('条数', 6, True) + pad('平均' + lbl(), 13, True)
+          + pad('目标', 9, True) + pad('实际', 9, True) + pad('偏差', 8, True) + pad('高于目标', 10, True))
+    for b in batches:
+        print('  ' + pad(b['name'], W) + pad(b['n'], 6, True) + pad(fd(b['dbar']), 13, True)
+              + pad(f'{b["tgt"]:.0f}秒', 9, True) + pad(f'{b["real"]:.0f}秒', 9, True)
+              + pad(f'{b["bias"] * 100:+.0f}%', 8, True) + pad(f'{b["high"] / b["n"] * 100:.0f}%', 10, True))
+
+    # ---- 判断 ----
+    print('\n【结论】')
+    big = [b for b in batches if abs(b['bias']) > 0.15]
+    last3 = batches[-3:]
+    streak = (len(batches) >= 3 and len({b['bias'] > 0 for b in last3}) == 1
+              and all(abs(b['bias']) > 0.02 for b in last3))
+    if streak:
+        d = '高于' if last3[-1]['bias'] > 0 else '低于'
+        print(f'  ⚠ 最近 3 批实际 AHT 都{d}目标 —— 属于系统性偏差，建议重新定标')
+    if big:
+        print(f'  ⚠ {"、".join(b["name"] for b in big)} 偏差超过 15% —— 建议重新定标')
+    far = [b for b in batches if b['out'] > b['n'] * 0.3]
+    if far:
+        print(f'  ⚠ {"、".join(b["name"] for b in far)} 有三成以上的 case 超出定标范围 —— '
+              f'这几批的目标是往外推算出来的，上面的偏差说明不了公式准不准。'
+              f'先补这个范围的数据重新定标')
+    if streak or big or far:
+        print(f'\n     用最近的生产数据重跑：')
+        print(f'     python3 calib.py fit {batches[-1]["name"]} --vs {a.model} --save 新模型.json')
+        print(f'     先确认标注规则、工具、计时口径有没有变；只是换了一批人的话，')
+        print(f'     重跑后看「标注员 vs 项目经理」那一段的换算系数就够，不必改每单位增量')
+    elif len(batches) < 3:
+        print(f'  本批偏差 {batches[-1]["bias"] * 100:+.0f}%，在正常范围内。')
+        print(f'  单批偏高或偏低都算正常波动 —— 要判断是不是系统性偏差，至少看连续 3 批：')
+        print(f'  python3 calib.py check --model {a.model} 第1批.csv 第2批.csv 第3批.csv')
+    else:
+        print(f'  公式还能用。{len(batches)} 批里没有连续同方向偏离，也没有哪一批偏差超过 15%')
+        print(f'  照常每批跑 predict 出目标即可')
+
+    if notes:
+        print('\n【需要注意】')
+        for x in dict.fromkeys(notes): print('  ' + x)
+    print()
+
+
 def main():
     ap = argparse.ArgumentParser(
         description='按长短（视频时长 / 字数 / 图片数…）定 AHT（平均每条处理时长）目标',
@@ -613,6 +719,15 @@ def main():
     p.add_argument('--per-case', help='逐条目标输出 CSV')
     p.add_argument('--dur-col', help='长短在哪一列（列名或从 0 数起的位置），认不出时才需要')
     p.set_defaults(func=cmd_predict)
+
+    c = sub.add_parser('check', help='看现有公式还准不准，要不要重新定标',
+                       description='拿实际数据和公式算出的目标比，判断是「只调整本批目标」还是「需要重新测算公式」')
+    c.add_argument('data', nargs='+', help='一批或多批的实际数据 CSV（要有长短和 AHT 两列），按时间先后排列')
+    c.add_argument('--model', required=True, help='fit 时用 --save 存下的文件，如 prod.json')
+    c.add_argument('--ratio', type=float, default=1.0, help='乘一个换算系数，与 predict 的用法一致')
+    c.add_argument('--dur-col', help='长短在哪一列（列名或从 0 数起的位置），认不出时才需要')
+    c.add_argument('--aht-col', help='AHT 在哪一列（列名或从 0 数起的位置），认不出时才需要')
+    c.set_defaults(func=cmd_check)
 
     a = ap.parse_args()
     a.func(a)
